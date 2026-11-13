@@ -5,14 +5,15 @@
  */
 import { Snapshot } from '@rusq/shared';
 import { api } from './api.ts';
-import { kvGet, kvSet, K } from './db.ts';
+import { db, kvGet, kvSet, K } from './db.ts';
+import { downloadMapRegion, downloadShelters, MAP_INFO, verifyMapStored } from './offline-map.ts';
 import { getAckPublicKey, getTeamKey, provisionKeys } from './keys.ts';
 import { permissionState, refreshLastKnown } from './location.ts';
 import { resetRelayNode } from './relay.ts';
 import type { Role } from '@rusq/shared';
 import { downloadModelFiles, loadVision, modelFiles, verifyModelsStored } from './vision.ts';
 
-export type ItemId = 'shell' | 'keys' | 'snapshot' | 'shelters' | 'vision' | 'location' | 'storage';
+export type ItemId = 'shell' | 'keys' | 'snapshot' | 'map' | 'shelters' | 'vision' | 'location' | 'storage';
 
 export interface CheckItem {
   id: ItemId;
@@ -91,19 +92,36 @@ export const CHECKLIST: CheckItem[] = [
     },
   },
   {
-    id: 'shelters',
-    label: 'Shelters list',
-    why: 'Names and places of shelters, available without internet.',
+    id: 'map',
+    label: 'Map of your area',
+    why: 'Streets, rivers and shelters of the sample region, so the map opens without internet.',
     roles: ['victim', 'rescuer', 'admin'],
-    download: async () => {
-      if (!(await kvGet(K.snapshot))) {
-        const snap = Snapshot.parse(await api('/snapshot'));
-        await kvSet(K.snapshot, snap);
+    sizeBytes: async () => {
+      try {
+        return ((await (await fetch(MAP_INFO)).json()) as { bytes: number }).bytes;
+      } catch {
+        return (await verifyMapStored()).bytes ?? null;
       }
     },
+    download: async () => {
+      await downloadMapRegion();
+    },
+    verify: verifyMapStored,
+  },
+  {
+    id: 'shelters',
+    label: 'Shelters list',
+    why: 'Names, addresses, phone numbers and free places of shelters, available without internet.',
+    roles: ['victim', 'rescuer', 'admin'],
+    sizeBytes: async () => {
+      const rows = await db.shelters.toArray();
+      return rows.length ? JSON.stringify(rows).length : null;
+    },
+    download: async () => {
+      await downloadShelters();
+    },
     verify: async () => {
-      const s = await kvGet<Snapshot>(K.snapshot);
-      const n = s?.sites.filter((x) => x.kind === 'shelter').length ?? 0;
+      const n = await db.shelters.count();
       return n > 0 ? { ok: true, detail: `${n} shelters saved` } : { ok: false, detail: 'Not saved yet' };
     },
   },

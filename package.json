@@ -20,7 +20,10 @@
     "typecheck": "tsc -p packages/shared && tsc -p apps/server && tsc -p apps/web",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "seed": "npm run seed -w @rusq/server"
+    "seed": "npm run seed -w @rusq/server",
+    "demo": "tsx scripts/demo-flood.mjs",
+    "build:map": "node scripts/build-map.mjs",
+    "inspect-db": "node scripts/inspect-db.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",

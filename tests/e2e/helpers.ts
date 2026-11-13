@@ -44,6 +44,7 @@ export async function startServer(): Promise<TestServer> {
         NODE_ENV: 'test',
         RUSQ_RATE_LIMIT: '100000',
         RUSQ_LOGIN_RATE_LIMIT: '1000',
+        RUSQ_TEST_USERS: '1', // fixture accounts asha / ravi / meena / kiran – never in a normal start
       },
       stdio: ['ignore', 'ignore', 'pipe'],
     });
@@ -74,12 +75,44 @@ export async function startServer(): Promise<TestServer> {
   return { url, port, dbPath, stop, restart: async () => (await stop(), await launch()) };
 }
 
+/** Test fixture accounts that are people needing help: they sign in with the user ID only. */
+export const VICTIMS = new Set(['asha']);
+
 export async function login(page: Page, url: string, username: string) {
   await page.goto(`${url}/login`);
-  await page.getByLabel('Username').fill(username);
-  await page.getByLabel('Password').fill('demo1234');
+  await page.getByLabel('Your user ID').fill(username);
+  if (!VICTIMS.has(username)) await page.getByLabel(/^Password/).fill('demo1234');
   await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page).toHaveURL(/\/setup/);
+  // the control room goes straight to its dashboard (no "Ready for offline")
+  await expect(page).toHaveURL(username === 'admin' ? /\/admin$/ : /\/setup/);
+}
+
+/** Delivery status of everything in the phone's outbox (read straight from IndexedDB), newest first. */
+export async function outboxStatuses(page: Page, kind?: string): Promise<string[]> {
+  const rows = await page.evaluate(
+    () =>
+      new Promise<{ kind: string; status: string; createdAt: string }[]>((res, rej) => {
+        const r = indexedDB.open('rusq');
+        r.onerror = () => rej(r.error);
+        r.onsuccess = () => {
+          const g = r.result.transaction('outbox', 'readonly').objectStore('outbox').getAll();
+          g.onerror = () => rej(g.error);
+          g.onsuccess = () => {
+            res((g.result as { kind: string; status: string; createdAt: string }[]).map((x) => ({ kind: x.kind, status: x.status, createdAt: x.createdAt })));
+            r.result.close();
+          };
+        };
+      }),
+  );
+  return rows
+    .filter((x) => !kind || x.kind === kind)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map((x) => x.status);
+}
+
+/** The delivery status of the newest SOS, shown right below the SOS button (Home and /sos). */
+export function sosStatus(page: Page) {
+  return page.getByTestId('sos-result').getByTestId('delivery-status');
 }
 
 /** Runs the given setup items and waits until each is VERIFIED green. */
@@ -115,7 +148,7 @@ export async function throttleCpu(context: BrowserContext, page: Page, rate = 4)
 }
 
 export async function apiLogin(url: string, username: string): Promise<string> {
-  const r = await fetch(`${url}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, password: 'demo1234' }) });
+  const r = await fetch(`${url}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(VICTIMS.has(username) ? { username } : { username, password: 'demo1234' }) });
   return ((await r.json()) as { token: string }).token;
 }
 

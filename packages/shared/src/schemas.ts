@@ -65,6 +65,13 @@ export const Sos = z.object({
       name: z.string().max(80),
       contacts: z.array(Contact).max(5),
       medicalNotes: z.string().max(500).optional(),
+      /* Phase 2 profile fields (all optional, so Phase 1 SOS stay valid) */
+      age: z.number().int().min(0).max(130).optional(),
+      phone: z.string().max(32).optional(),
+      householdSize: z.number().int().min(1).max(50).optional(),
+      needs: z.array(z.string().max(20)).max(6).optional(),
+      occupation: z.string().max(80).optional(),
+      workplace: z.string().max(200).optional(),
     })
     .optional(),
   note: z.string().max(500).optional(),
@@ -157,12 +164,42 @@ export const AuditEntry = z.object({
 });
 export type AuditEntry = z.infer<typeof AuditEntry>;
 
+/* ------------------------ missing persons (Phase 2) ------------------------ */
+
+/**
+ * A family's missing-person report (§10.6). Created on the phone and queued in
+ * the outbox like an SOS (works offline, honest delivery status).
+ */
+export const MissingReport = z.object({
+  id: Uuid,
+  reporterId: Uuid,
+  person: z.object({
+    name: z.string().trim().min(1).max(80),
+    age: z.number().int().min(0).max(130).optional(),
+    gender: z.enum(['female', 'male', 'other', 'unknown']).default('unknown'),
+    description: z.string().trim().max(1000).default(''),
+  }),
+  lastSeen: z.object({
+    place: z.string().trim().min(1).max(200),
+    lat: Lat.optional(),
+    lng: Lng.optional(),
+    at: IsoDate.optional(),
+  }),
+  contactPhone: z.string().trim().min(3).max(32),
+  relation: z.string().trim().max(40).default(''),
+  /** photos of the missing person (ids of photo uploads; the bytes travel like report photos) */
+  photos: z.array(Uuid).max(3).default([]),
+  createdAt: IsoDate,
+});
+export type MissingReport = z.infer<typeof MissingReport>;
+
 /* ----------------------------- sync API ----------------------------- */
 
 export const SyncItem = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('sos'), data: Sos }),
   z.object({ kind: z.literal('report'), data: FieldReport }),
   z.object({ kind: z.literal('allotment'), data: Allotment }),
+  z.object({ kind: z.literal('missing'), data: MissingReport }),
 ]);
 export type SyncItem = z.infer<typeof SyncItem>;
 
@@ -176,7 +213,7 @@ export const SyncRequest = z.object({ items: z.array(SyncItem).min(1).max(50) })
  */
 export const Ack = z.object({
   clientId: Uuid,
-  kind: z.enum(['sos', 'report', 'allotment', 'photo']),
+  kind: z.enum(['sos', 'report', 'allotment', 'photo', 'missing']),
   serverId: z.string().min(1),
   receivedAt: IsoDate,
   duplicate: z.boolean().default(false),

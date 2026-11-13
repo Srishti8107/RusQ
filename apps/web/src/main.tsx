@@ -9,6 +9,8 @@ import { startConnectivityMonitor } from './lib/connectivity.ts';
 import { startSyncScheduler } from './lib/sync.ts';
 import { startLocationKeeper } from './lib/location.ts';
 import { startUpdateWatcher } from './lib/update.ts';
+import { startAutoLink } from './lib/autolink.ts';
+import { startAdminFeed } from './lib/adminfeed.ts';
 import { allocate, canonicalJson } from '@rusq/shared';
 
 // Read-only handle to the shared engine, used by the cross-engine byte-identity
@@ -19,6 +21,8 @@ startConnectivityMonitor();
 startSyncScheduler();
 startLocationKeeper();
 startUpdateWatcher();
+startAutoLink(); // nearby phones connect by themselves (decisions.md 12.10)
+startAdminFeed(); // control room: pop-up for every new SOS / report (decisions.md 13.4)
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

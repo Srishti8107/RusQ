@@ -22,16 +22,22 @@ import { openDb, type Db } from './db.ts';
 import { loadKeys } from './keys.ts';
 import { HttpError, Services } from './services.ts';
 import { hashPassword, requireRole, signToken, verifyPassword } from './auth.ts';
-import { seedDemo } from './seed.ts';
+import { seedDemo, seedPhase2, seedTestUsers } from './seed.ts';
+import { registerPhase2Routes } from './routes-phase2.ts';
+import { registerPeerRoutes } from './routes-peer.ts';
 
 export interface AppOptions {
   dbPath?: string;
   db?: Db;
   seed?: boolean;
+  /** TEST FIXTURE accounts (asha / ravi / meena / kiran) – automated tests only, never in a normal start */
+  testUsers?: boolean;
   staticDir?: string;
   logger?: boolean;
   /** login attempts per minute per IP (default 20) */
   loginRateLimitMax?: number;
+  /** victim self-registrations per minute per IP (default 10) */
+  registerRateLimitMax?: number;
   /** requests per minute per IP (global); tests can lower/raise it */
   rateLimitMax?: number;
   now?: () => Date;
@@ -41,7 +47,11 @@ export async function buildApp(opts: AppOptions = {}): Promise<{ app: FastifyIns
   const db = opts.db ?? openDb(opts.dbPath ?? ':memory:');
   const keys = await loadKeys(db);
   const services = new Services(db, keys, opts.now);
-  if (opts.seed) seedDemo(services);
+  if (opts.seed) {
+    seedDemo(services);
+    seedPhase2(services);
+  }
+  if (opts.testUsers) seedTestUsers(services);
 
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 12 * 1024 * 1024, trustProxy: true });
 
@@ -74,7 +84,6 @@ export async function buildApp(opts: AppOptions = {}): Promise<{ app: FastifyIns
   });
 
   const any = requireRole(keys.tokenSecret);
-  const fieldOrAdmin = requireRole(keys.tokenSecret, 'rescuer', 'admin');
   const admin = requireRole(keys.tokenSecret, 'admin');
 
   /* ------------------------------ public ------------------------------ */
@@ -85,13 +94,16 @@ export async function buildApp(opts: AppOptions = {}): Promise<{ app: FastifyIns
   app.get('/api/server-key', async () => ({ ackPublicJwk: keys.ackPublicJwk }));
 
   app.post('/api/auth/login', { config: { rateLimit: { max: opts.loginRateLimitMax ?? 20, timeWindow: '1 minute' } } }, async (req, reply) => {
-    const body = z.object({ username: z.string().min(1).max(64), password: z.string().min(1).max(200) }).parse(req.body);
-    const u = db.prepare('SELECT id, username, password_hash, role, name, team_id FROM users WHERE username = ?').get(body.username.toLowerCase()) as
-      | { id: string; username: string; password_hash: string; role: 'victim' | 'rescuer' | 'admin'; name: string; team_id: string | null }
+    // Victims sign in with their USER ID only (no password, decisions.md 12.2). Staff need a password.
+    const body = z.object({ username: z.string().trim().min(1).max(64), password: z.string().max(200).optional().default('') }).parse(req.body);
+    const u = db.prepare('SELECT id, username, password_hash, role, name, team_id, disabled FROM users WHERE username = ?').get(body.username.toLowerCase()) as
+      | { id: string; username: string; password_hash: string; role: 'victim' | 'rescuer' | 'admin'; name: string; team_id: string | null; disabled: number }
       | undefined;
-    if (!u || !verifyPassword(body.password, u.password_hash)) {
+    const ok = !!u && !u.disabled && (u.role === 'victim' || verifyPassword(body.password, u.password_hash));
+    if (!ok) {
       services.audit(body.username, 'auth.failed', 'login');
-      return reply.code(401).send({ error: 'wrong username or password' });
+      if (u && !u.disabled && u.role !== 'victim' && !body.password) return reply.code(401).send({ error: 'Rescue-team and control-room accounts need their password.' });
+      return reply.code(401).send({ error: u?.role === 'victim' ? 'This account is disabled.' : 'Wrong user ID or password.' });
     }
     const token = signToken(keys.tokenSecret, { sub: u.id, role: u.role, name: u.name, teamId: u.team_id });
     services.audit(u.username, 'auth.login', u.id);
@@ -139,6 +151,13 @@ export async function buildApp(opts: AppOptions = {}): Promise<{ app: FastifyIns
           continue;
         }
         acks.push(await services.ingestSos(it.data, 'direct', user.sub));
+      } else if (it.kind === 'missing') {
+        // any signed-in person may report a missing family member – but only as themselves
+        if (it.data.reporterId !== user.sub) {
+          rejected.push({ clientId, reason: 'reporterId must match the signed-in user' });
+          continue;
+        }
+        acks.push(await services.ingestMissing(it.data, 'direct', user.sub));
       } else if (user.role === 'victim') {
         rejected.push({ clientId, reason: `role victim cannot submit ${it.kind}` });
       } else if (it.kind === 'report') {
@@ -160,20 +179,36 @@ export async function buildApp(opts: AppOptions = {}): Promise<{ app: FastifyIns
     done(null, body),
   );
 
-  app.put('/api/photos/:id', { preHandler: fieldOrAdmin }, async (req) => {
+  /**
+   * Photo upload. Rescuers/admin: field-report photos. Anyone (also people needing help):
+   * photos of a MISSING PERSON they reported (decisions.md 13.1) – the missing-person report
+   * must already be on the server and be their own.
+   */
+  app.put('/api/photos/:id', { preHandler: any }, async (req) => {
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const reportId = Uuid.parse(req.headers['x-report-id']);
+    const user = req.user!;
+    if (user.role === 'victim') {
+      const m = db.prepare('SELECT reporter_id FROM missing_reports WHERE id = ?').get(reportId) as { reporter_id: string } | undefined;
+      if (!m) throw new HttpError(409, 'the missing-person report has not reached the server yet – the photo is sent right after it');
+      if (m.reporter_id !== user.sub) throw new HttpError(403, 'photos can only be added to your own missing-person report');
+    }
     const mime = String(req.headers['content-type']).split(';')[0]!;
     const body = req.body as Buffer;
     if (!Buffer.isBuffer(body) || body.length === 0) throw new HttpError(400, 'image body required');
     if (!looksLikeImage(body)) throw new HttpError(400, 'body is not a JPEG/PNG/WebP image');
-    return services.ingestPhoto(id, reportId, mime, new Uint8Array(body), req.user!.sub);
+    return services.ingestPhoto(id, reportId, mime, new Uint8Array(body), user.sub);
   });
 
-  app.get('/api/photos/:id', { preHandler: fieldOrAdmin }, async (req, reply) => {
+  /** Missing-person photos: only the control room and the family who sent them. Report photos: rescuers + admin. */
+  app.get('/api/photos/:id', { preHandler: any }, async (req, reply) => {
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const p = services.getPhoto(id);
     if (!p) return reply.code(404).send({ error: 'not found' });
+    const user = req.user!;
+    const m = db.prepare('SELECT reporter_id FROM missing_reports WHERE id = ?').get(p.report_id) as { reporter_id: string } | undefined;
+    const allowed = m ? user.role === 'admin' || m.reporter_id === user.sub : user.role !== 'victim';
+    if (!allowed) return reply.code(403).send({ error: 'not allowed to view this photo' });
     return reply.type(p.mime).send(Buffer.from(p.bytes));
   });
 
@@ -229,6 +264,9 @@ export async function buildApp(opts: AppOptions = {}): Promise<{ app: FastifyIns
 
   app.get('/api/admin/audit', { preHandler: admin }, async () => services.listAudit());
 
+  await registerPhase2Routes(app, services, keys, { registerRateLimitMax: opts.registerRateLimitMax });
+  await registerPeerRoutes(app, keys);
+
   /* ------------------------- static web app --------------------------- */
 
   if (opts.staticDir && existsSync(opts.staticDir)) {
@@ -237,7 +275,7 @@ export async function buildApp(opts: AppOptions = {}): Promise<{ app: FastifyIns
     // A missing /models/x.onnx must be a real 404 – never index.html with status 200.
     app.setNotFoundHandler((req, reply) => {
       const path = req.url.split('?')[0]!;
-      const isAssetDir = /^\/(api|models|ort|assets|icons|fixtures)\//.test(path);
+      const isAssetDir = /^\/(api|models|ort|assets|icons|fixtures|map)\//.test(path);
       const hasExt = /\.[a-z0-9]{1,8}$/i.test(path);
       if (req.method === 'GET' && !isAssetDir && !hasExt) return reply.type('text/html').sendFile('index.html');
       return reply.code(404).send({ error: 'not found' });

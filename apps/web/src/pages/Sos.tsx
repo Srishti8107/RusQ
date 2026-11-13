@@ -1,140 +1,77 @@
 /**
- * SOS (§4): one huge button → 3-second countdown with a big CANCEL → saved to
- * the outbox FIRST (status "Saved on this phone only"), then synced.
+ * SOS screen (§4). The button, countdown and delivery message live in SosPanel (also at the
+ * top of Home).
  * The same code runs from the in-app button, the Android shortcut
  * (/sos?source=shortcut) and the iOS "SOS" home-screen entry (?source=sos_entry).
  */
-import { useEffect, useRef, useState } from 'react';
+import { useLayoutEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { uuidv7, type Sos } from '@rusq/shared';
-import { StatusBadge } from '../components/StatusBadge.tsx';
-import { db, kvGet, K, StorageFullError } from '../lib/db.ts';
-import { useLive, useNow, useSession } from '../lib/hooks.ts';
-import { agoText, getLocation, type LocationResult } from '../lib/location.ts';
-import { queueSos } from '../lib/outbox.ts';
-
-const COUNTDOWN_S = 3;
+import type { Sos } from '@rusq/shared';
+import { SosPanel } from '../components/SosPanel.tsx';
 
 export function SosPage() {
-  const session = useSession();
   const [params] = useSearchParams();
   const source = (params.get('source') === 'shortcut' ? 'shortcut' : params.get('source') === 'sos_entry' ? 'sos_entry' : 'app') as Sos['source'];
-  const [phase, setPhase] = useState<'idle' | 'counting' | 'saving' | 'saved'>('idle');
-  const [count, setCount] = useState(COUNTDOWN_S);
-  const [sosId, setSosId] = useState<string | null>(null);
-  const [loc, setLoc] = useState<LocationResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const now = useNow(15_000);
-  const row = useLive(() => (sosId ? db.outbox.get(sosId) : Promise.resolve(undefined)), [sosId], undefined);
 
-  useEffect(() => () => {
-    if (timer.current) clearInterval(timer.current);
-  }, []);
-
-  function start() {
-    setError(null);
-    setPhase('counting');
-    setCount(COUNTDOWN_S);
-    // start getting location during the countdown so no time is lost
-    const locP = getLocation(8000);
-    let n = COUNTDOWN_S;
-    timer.current = setInterval(() => {
-      n -= 1;
-      setCount(n);
-      if (n <= 0) {
-        clearInterval(timer.current!);
-        timer.current = null;
-        void send(locP);
-      }
-    }, 1000);
-  }
-
-  function cancel() {
-    if (timer.current) clearInterval(timer.current);
-    timer.current = null;
-    setPhase('idle');
-  }
-
-  async function send(locP: Promise<LocationResult>) {
-    setPhase('saving');
-    try {
-      const l = await locP;
-      setLoc(l);
-      const profile = await kvGet<Partial<NonNullable<Sos['profile']>>>(K.profile);
-      const sos: Sos = {
-        id: uuidv7(),
-        userId: session!.user.id,
-        lat: l.fix?.lat ?? null,
-        lng: l.fix?.lng ?? null,
-        accuracy: l.fix?.accuracy ?? null,
-        locationSource: l.source,
-        locationAt: l.fix?.at ?? null,
-        createdAt: new Date().toISOString(),
-        source,
-        profile: { name: profile?.name ?? session!.user.name, contacts: profile?.contacts ?? [], medicalNotes: profile?.medicalNotes },
-      };
-      await queueSos(sos);
-      setSosId(sos.id);
-      setPhase('saved');
-    } catch (e) {
-      setError(e instanceof StorageFullError ? e.message : `Could not save the SOS: ${(e as Error).message}`);
-      setPhase('idle');
+  // iOS workaround (§4): on /sos?source=sos_entry the page offers its OWN manifest,
+  // icon and title, so "Add to Home Screen" creates a separate red "SOS" app whose
+  // start address is this SOS screen. Restored when leaving the page.
+  const isEntry = source === 'sos_entry';
+  // useLayoutEffect: swap BEFORE the first paint, so "Add to Home Screen" can never catch the main manifest.
+  useLayoutEffect(() => {
+    if (!isEntry) return;
+    const swap = (sel: string, attr: string, value: string) => {
+      const el = document.querySelector(sel);
+      const old = el?.getAttribute(attr) ?? null;
+      el?.setAttribute(attr, value);
+      return () => (old === null ? el?.removeAttribute(attr) : el?.setAttribute(attr, old));
+    };
+    let link = document.querySelector('link[rel="manifest"]') as HTMLLinkElement | null;
+    let created = false;
+    if (!link) {
+      link = document.createElement('link');
+      link.rel = 'manifest';
+      document.head.appendChild(link);
+      created = true;
     }
-  }
+    const oldHref = link.getAttribute('href');
+    link.setAttribute('href', '/sos.webmanifest');
+    const undo = [
+      swap('link[rel="apple-touch-icon"]', 'href', '/icons/sos-apple-touch-icon.png'),
+      swap('meta[name="apple-mobile-web-app-title"]', 'content', 'SOS'),
+      swap('meta[name="theme-color"]', 'content', '#7F0000'),
+    ];
+    const oldTitle = document.title;
+    document.title = 'SOS';
+    return () => {
+      if (created) link!.remove();
+      else if (oldHref) link!.setAttribute('href', oldHref);
+      undo.forEach((u) => u());
+      document.title = oldTitle;
+    };
+  }, [isEntry]);
+  const standalone = typeof window !== 'undefined' && (window.matchMedia?.('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone === true);
 
   return (
     <div className="sos-wrap">
       <h1>Emergency SOS</h1>
-      {phase === 'idle' && (
-        <>
-          <p>Press the red button. You will have {COUNTDOWN_S} seconds to cancel.</p>
-          <button className="sos-button" onClick={start} data-testid="sos-button" aria-label="Send SOS">
-            SOS
-            <small>Press for help</small>
-          </button>
-        </>
-      )}
-      {phase === 'counting' && (
-        <>
-          <p style={{ fontSize: '1.3rem', fontWeight: 700 }}>Sending SOS in</p>
-          <div className="countdown" aria-live="assertive" data-testid="sos-countdown">
-            {count}
-          </div>
-          <button className="btn danger secondary block" style={{ maxWidth: 360, minHeight: 72, fontSize: '1.4rem' }} onClick={cancel} data-testid="sos-cancel">
-            ✖ CANCEL – do not send
-          </button>
-        </>
-      )}
-      {phase === 'saving' && <p aria-live="polite">Saving your SOS…</p>}
-      {phase === 'saved' && row && (
-        <div className="card" style={{ width: '100%', textAlign: 'left' }} data-testid="sos-result">
-          <h2>Your SOS is saved</h2>
-          <StatusBadge s={row} long />
-          <p className="small" style={{ marginTop: 10 }}>
-            {loc?.source === 'live' && <>📍 Location included (accuracy about {loc.fix!.accuracy} m).</>}
-            {loc?.source === 'last_known' && (
-              <span data-testid="last-known">
-                📍 <strong>Last known location, {agoText(loc.fix!.at, now)}</strong> – live location was not available ({loc.error}).
-              </span>
-            )}
-            {loc?.source === 'none' && <>⚠ No location available ({loc.error}). Rescuers will see your name and contacts.</>}
+      <SosPanel source={source} />
+      {isEntry && !standalone && (
+        <div className="card" style={{ textAlign: 'left' }} data-testid="sos-entry-help">
+          <h2>Put this SOS button on your home screen</h2>
+          <p>
+            <strong>iPhone:</strong> tap the Share button (square with an arrow) → <strong>Add to Home Screen</strong> → Add. A red “SOS” icon appears that opens
+            straight to this button.
           </p>
-          <p>Stay where you are safe. Keep this phone on. RusQ keeps trying to send automatically.</p>
-          <div className="row">
-            <Link className="btn secondary" to="/outbox">
-              See all messages
-            </Link>
-            <Link className="btn secondary" to="/nearby">
-              Pass to a nearby phone
-            </Link>
-          </div>
+          <p>
+            <strong>Android:</strong> you can also press and hold the RusQ icon and drag the “SOS” shortcut to your home screen.
+          </p>
         </div>
       )}
-      {error && (
-        <div className="banner bad" role="alert">
-          {error}
-        </div>
+      {!isEntry && (
+        <p className="small">
+          <Link to="/sos?source=sos_entry">Add a separate SOS button to your home screen (iPhone)</Link>
+        </p>
       )}
     </div>
   );

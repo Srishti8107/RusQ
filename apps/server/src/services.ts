@@ -17,6 +17,7 @@ import {
   type Ack,
   type Allotment,
   type FieldReport,
+  type MissingReport,
   type MeshMessage,
   type ResourceQty,
   type Site,
@@ -24,6 +25,7 @@ import {
 } from '@rusq/shared';
 import { nextServerId, tx, kvGet, kvSet, type Db } from './db.ts';
 import type { ServerKeys } from './keys.ts';
+import { proposeCandidates } from './missing-service.ts';
 
 export type Via = 'direct' | 'relay';
 
@@ -31,7 +33,7 @@ export class Services {
   constructor(
     readonly db: Db,
     readonly keys: ServerKeys,
-    private readonly now: () => Date = () => new Date(),
+    readonly now: () => Date = () => new Date(),
   ) {}
 
   /* ------------------------------- audit ------------------------------- */
@@ -108,6 +110,25 @@ export class Services {
     return this.ack(a.id, 'allotment', serverId, at, false);
   }
 
+  /** Family missing-person report (Phase 2). Idempotent; the system then proposes sample-registry candidates. */
+  async ingestMissing(m: MissingReport, via: Via, actor: string): Promise<Ack> {
+    const existing = this.db.prepare('SELECT server_id, received_at FROM missing_reports WHERE id = ?').get(m.id) as
+      | { server_id: string; received_at: string }
+      | undefined;
+    if (existing) return this.ack(m.id, 'missing', existing.server_id, existing.received_at, true);
+    const at = this.now().toISOString();
+    const serverId = tx(this.db, () => {
+      const sid = nextServerId(this.db, 'MIS');
+      this.db
+        .prepare('INSERT INTO missing_reports (id, server_id, reporter_id, data, via, received_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(m.id, sid, m.reporterId, JSON.stringify(m), via, at, at);
+      return sid;
+    });
+    this.audit(actor, 'missing.reported', m.id, { serverId, via });
+    proposeCandidates(this, m.id);
+    return this.ack(m.id, 'missing', serverId, at, false);
+  }
+
   async ingestPhoto(photoId: string, reportId: string, mime: string, bytes: Uint8Array, actor: string): Promise<Ack> {
     const existing = this.db.prepare('SELECT server_id, received_at FROM photos WHERE id = ?').get(photoId) as
       | { server_id: string; received_at: string }
@@ -155,14 +176,31 @@ export class Services {
     return { acks, rejected };
   }
 
+  /** Remember how a relayed record travelled: hops between phones and who uploaded it (first arrival only). */
+  private noteRelay(table: 'sos' | 'reports' | 'missing_reports', id: string, hops: number, actor: string) {
+    const u = this.db.prepare('SELECT username FROM users WHERE id = ?').get(actor) as { username: string } | undefined;
+    this.db.prepare(`UPDATE ${table} SET relay_hops = ?, relay_gateway = ? WHERE id = ? AND via = 'relay' AND relay_hops IS NULL`).run(hops, u?.username ?? actor, id);
+  }
+
   private async ingestEnvelope(m: MeshMessage, actor: string): Promise<Ack | null> {
     switch (m.type) {
-      case 'sos':
-        return this.ingestSos(m.payload as Sos, 'relay', actor);
-      case 'report':
-        return this.ingestReport(m.payload as FieldReport, 'relay', actor);
+      case 'sos': {
+        const ack = await this.ingestSos(m.payload as Sos, 'relay', actor);
+        this.noteRelay('sos', (m.payload as Sos).id, m.hops, actor);
+        return ack;
+      }
+      case 'report': {
+        const ack = await this.ingestReport(m.payload as FieldReport, 'relay', actor);
+        this.noteRelay('reports', (m.payload as FieldReport).id, m.hops, actor);
+        return ack;
+      }
       case 'allotment':
         return this.ingestAllotment(m.payload as Allotment, 'relay', actor);
+      case 'missing': {
+        const ack = await this.ingestMissing(m.payload as MissingReport, 'relay', actor);
+        this.noteRelay('missing_reports', (m.payload as MissingReport).id, m.hops, actor);
+        return ack;
+      }
       case 'photo_chunk':
         return this.ingestChunk(m, actor);
       case 'photo_thumb':
@@ -383,26 +421,38 @@ export class Services {
 
   /* ------------------------------ overview ----------------------------- */
 
-  listSos() {
-    return (this.db.prepare('SELECT server_id, data, via, received_at, status FROM sos ORDER BY received_at DESC').all() as Record<string, string>[]).map((r) => ({
+  listSos(): (Sos & { serverId: string; via: string; receivedAt: string; status: string; assignedTeam: string | null; opsNote: string | null; statusBy: string | null; statusAt: string | null; relayHops: number | null; relayGateway: string | null })[] {
+    return (
+      this.db
+        .prepare('SELECT server_id, data, via, received_at, status, assigned_team, ops_note, status_by, status_at, relay_hops, relay_gateway FROM sos ORDER BY received_at DESC')
+        .all() as Record<string, string | null>[]
+    ).map((r) => ({
       ...(JSON.parse(r.data!) as Sos),
-      serverId: r.server_id,
-      via: r.via,
-      receivedAt: r.received_at,
-      status: r.status,
+      serverId: r.server_id!,
+      via: r.via!,
+      receivedAt: r.received_at!,
+      status: r.status!,
+      assignedTeam: r.assigned_team ?? null,
+      opsNote: r.ops_note ?? null,
+      statusBy: r.status_by ?? null,
+      statusAt: r.status_at ?? null,
+      relayHops: r.relay_hops === null || r.relay_hops === undefined ? null : Number(r.relay_hops),
+      relayGateway: r.relay_gateway ?? null,
     }));
   }
 
   listReports() {
-    return (this.db.prepare('SELECT server_id, data, via, received_at FROM reports ORDER BY received_at DESC').all() as Record<string, string>[]).map((r) => ({
-      ...(JSON.parse(r.data!) as FieldReport),
-      serverId: r.server_id,
-      via: r.via,
-      receivedAt: r.received_at,
+    return (this.db.prepare('SELECT server_id, data, via, received_at, relay_hops, relay_gateway FROM reports ORDER BY received_at DESC').all() as Record<string, string | number | null>[]).map((r) => ({
+      ...(JSON.parse(r.data as string) as FieldReport),
+      serverId: r.server_id as string,
+      via: r.via as string,
+      receivedAt: r.received_at as string,
+      relayHops: r.relay_hops === null ? null : Number(r.relay_hops),
+      relayGateway: (r.relay_gateway as string | null) ?? null,
     }));
   }
 
-  count(table: 'sos' | 'reports' | 'allotments' | 'photos'): number {
+  count(table: 'sos' | 'reports' | 'allotments' | 'photos' | 'missing_reports' | 'users'): number {
     return (this.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
   }
 }

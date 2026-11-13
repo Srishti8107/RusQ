@@ -37,14 +37,14 @@ let n = 0;
 const uid = () => `01890000-0000-7000-8000-${(++n).toString(16).padStart(12, '0')}`;
 
 function sos(userId: string, id = uid()): Sos {
-  return { id, userId, lat: 26.16, lng: 91.77, accuracy: 20, locationSource: 'live', createdAt: new Date().toISOString(), source: 'app' };
+  return { id, userId, lat: 27.69, lng: 85.31, accuracy: 20, locationSource: 'live', createdAt: new Date().toISOString(), source: 'app' };
 }
 function report(id = uid(), over: Partial<FieldReport> = {}): FieldReport {
   return {
     id,
     teamId: 'team-alpha',
-    lat: 26.17,
-    lng: 91.75,
+    lat: 27.70,
+    lng: 85.29,
     locationSource: 'live',
     victimCount: 30,
     urgency: 5,
@@ -59,7 +59,7 @@ function report(id = uid(), over: Partial<FieldReport> = {}): FieldReport {
 }
 
 beforeEach(async () => {
-  ctx = await buildApp({ seed: true });
+  ctx = await buildApp({ seed: true, testUsers: true });
   for (const u of ['asha', 'ravi', 'meena', 'admin']) await login(u);
 });
 

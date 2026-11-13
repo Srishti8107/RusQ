@@ -1,8 +1,9 @@
 /** "Ready for offline" (§5): sizes, a checklist that turns green only after VERIFYING storage, storage use. */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useReach, useSession } from '../lib/hooks.ts';
 import { CHECKLIST, mb, storageEstimate, type ItemId } from '../lib/setup.ts';
 import { StorageFullError, isQuotaError } from '../lib/db.ts';
+import { friendlyError } from '../lib/api.ts';
 
 interface ItemState {
   ok: boolean;
@@ -21,15 +22,24 @@ export function Setup() {
   const [state, setState] = useState<Record<string, ItemState>>({});
   const [est, setEst] = useState<{ usage: number; quota: number } | null>(null);
   const [busyAll, setBusyAll] = useState(false);
+  /** when each item's own download+verify last finished */
+  const ranAt = useRef<Record<string, number>>({});
 
   const verifyAll = useCallback(async () => {
+    const startedAt = performance.now();
     const next: Record<string, ItemState> = {};
     for (const it of items) {
-      const v = await it.verify().catch((e) => ({ ok: false, detail: (e as Error).message }));
+      const v = await it.verify().catch((e) => ({ ok: false, detail: friendlyError(e) }));
       const size = it.sizeBytes ? await it.sizeBytes().catch(() => null) : null;
       next[it.id] = { ...v, size, busy: false };
     }
-    setState(next);
+    // A check that started BEFORE a download finished must not overwrite that download's
+    // fresh result (race seen when the role loads while "Team key" is downloading).
+    setState((cur) => {
+      const merged = { ...next };
+      for (const id of Object.keys(cur)) if (cur[id]!.busy || (ranAt.current[id] ?? 0) > startedAt) merged[id] = cur[id]!;
+      return merged;
+    });
     setEst(await storageEstimate());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [role]);
@@ -44,12 +54,13 @@ export function Setup() {
     try {
       await it.download?.((msg) => setState((s) => ({ ...s, [id]: { ...s[id]!, progress: msg } })));
     } catch (e) {
-      const msg = e instanceof StorageFullError || isQuotaError(e) ? new StorageFullError().message : (e as Error).message;
+      const msg = e instanceof StorageFullError || isQuotaError(e) ? new StorageFullError().message : friendlyError(e);
       setState((s) => ({ ...s, [id]: { ...s[id]!, busy: false, error: msg, progress: undefined } }));
       return;
     }
-    const v = await it.verify().catch((e) => ({ ok: false, detail: (e as Error).message }));
+    const v = await it.verify().catch((e) => ({ ok: false, detail: friendlyError(e) }));
     const size = it.sizeBytes ? await it.sizeBytes().catch(() => null) : null;
+    ranAt.current[id] = performance.now();
     setState((s) => ({ ...s, [id]: { ...v, size, busy: false } }));
     setEst(await storageEstimate());
   }

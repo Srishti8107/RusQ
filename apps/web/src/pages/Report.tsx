@@ -6,10 +6,12 @@
  *    suggestions, never changes urgency; both aiSuggestion and humanFinal stored
  *  - provisional allotment from the cached snapshot with the shared engine
  */
+import { ExplainShare, NotesHelper } from '../components/AssistPanels.tsx';
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   computeProvisionalAllotment,
+  incidentSiteId,
   HAZARD_LABELS,
   RESOURCE_KEYS,
   RESOURCES,
@@ -28,6 +30,7 @@ import { db, StorageFullError } from '../lib/db.ts';
 import { useLive, useNow, useSession } from '../lib/hooks.ts';
 import { agoText, getLocation, type LocationResult } from '../lib/location.ts';
 import { queueAllotment, queuePhoto, queueReport } from '../lib/outbox.ts';
+import { friendlyError } from '../lib/api.ts';
 import { PhotoError, processPhoto, type ProcessedPhoto } from '../lib/photos.ts';
 import { getDeviceId, getSettings } from '../lib/session.ts';
 import { analyzePhoto } from '../lib/vision.ts';
@@ -105,7 +108,7 @@ export function ReportPage() {
         setPhotos((ps) => [...ps, draft]);
         if (!lowPower) void runVision(draft.id, p.blob);
       } catch (e) {
-        setPhotoError(e instanceof PhotoError ? e.message : `Could not add photo: ${(e as Error).message}`);
+        setPhotoError(e instanceof PhotoError ? e.message : `Could not add photo: ${friendlyError(e)}`);
       }
     }
   }
@@ -175,7 +178,7 @@ export function ReportPage() {
       }
       setSaved(true);
     } catch (e) {
-      setError(e instanceof StorageFullError ? e.message : `Could not save: ${(e as Error).message}`);
+      setError(e instanceof StorageFullError ? e.message : `Could not save: ${friendlyError(e)}`);
     }
   }
 
@@ -184,13 +187,13 @@ export function ReportPage() {
       <div className="card" data-testid="report-saved">
         <h1>Report saved</h1>
         <StatusBadge s={row} long />
-        <p>It will be sent automatically. You can also pass it to a nearby phone.</p>
+        <p>It is sent automatically as soon as there is a connection (also through nearby phones). Its status is on Home.</p>
         <div className="row">
           <Link className="btn" to="/report" reloadDocument>
             New report
           </Link>
-          <Link className="btn secondary" to="/outbox">
-            Sent & waiting
+          <Link className="btn secondary" to="/">
+            Home – see my reports
           </Link>
           <Link className="btn secondary" to="/nearby">
             Nearby phones
@@ -351,6 +354,7 @@ export function ReportPage() {
           What did you observe?
           <textarea value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={4000} name="notes" />
         </label>
+        <NotesHelper notes={notes} onUse={setNotes} />
       </section>
 
       {/* Provisional allotment */}
@@ -398,6 +402,7 @@ export function ReportPage() {
                   Shared fairly with {snap.snap.sites.length} shelters using the same rule as the control room (more people and higher urgency get a bigger share).
                   This is a suggestion – the control room approves the real amounts.
                 </p>
+                <ExplainShare result={preview.result} siteId={incidentSiteId(reportId)} requested={requested} />
               </div>
             ) : (
               <p className="small muted">Tick what is needed above to see a fair share.</p>

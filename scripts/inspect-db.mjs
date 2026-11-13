@@ -61,6 +61,29 @@ function show() {
   for (const c of all('SELECT resource, live_stock, claimed, status, devices FROM conflicts ORDER BY created_at'))
     out.push(`  ${c.status.padEnd(8)} ${c.resource}: claimed ${c.claimed} > stock ${c.live_stock}  devices=${c.devices}`);
 
+  // Phase 2 tables (absent in a Phase 1 database that the server has not opened yet)
+  const has = (t) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t);
+  const sosCols = all('PRAGMA table_info(sos)').map((c) => c.name);
+  if (sosCols.includes('assigned_team')) {
+    out.push('\n== SOS handling (control room)');
+    for (const r of all("SELECT server_id, status, assigned_team, ops_note FROM sos WHERE status != 'open' ORDER BY received_at"))
+      out.push(`  ${r.server_id}  ${r.status.padEnd(12)} ${r.assigned_team ?? ''}${r.ops_note ? '  "' + r.ops_note + '"' : ''}`);
+  }
+  if (has('missing_reports')) {
+    out.push('\n== Missing-person cases (SAMPLE)');
+    for (const r of all('SELECT server_id, state, data, candidates, verified_by FROM missing_reports ORDER BY received_at')) {
+      const d = JSON.parse(r.data);
+      const c = JSON.parse(r.candidates);
+      const v = r.verified_by ? JSON.parse(r.verified_by) : null;
+      out.push(`  ${r.server_id}  ${r.state.padEnd(16)} ${d.person.name}  candidates=${c.map((x) => `${x.foundPersonId}@${x.confidence}`).join(',') || '-'}${v ? `  verified by ${v.name}` : ''}`);
+    }
+  }
+  if (has('rec_decisions')) {
+    out.push('\n== Decisions on recommendations');
+    for (const r of all('SELECT decided_at, decision, kind, actor_name, rec FROM rec_decisions ORDER BY decided_at'))
+      out.push(`  ${r.decided_at}  ${r.decision.padEnd(8)} ${r.kind.padEnd(22)} by ${r.actor_name}: ${JSON.parse(r.rec).title}`);
+  }
+
   out.push('\n== Last 15 audit entries');
   for (const a of all('SELECT at, actor, action, target FROM audit ORDER BY seq DESC LIMIT 15'))
     out.push(`  ${a.at}  ${a.action.padEnd(20)} ${a.target.slice(0, 24).padEnd(24)} by ${a.actor.slice(0, 12)}`);

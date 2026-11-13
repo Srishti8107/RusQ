@@ -4,7 +4,7 @@
  * "received" ONLY after the server ack. Plus the honesty, kill-tab and quota cases.
  */
 import { expect, test, type Page } from '@playwright/test';
-import { apiGet, apiLogin, login, setup, startServer, throttleCpu, waitForServiceWorker, FIXTURES, type TestServer } from './helpers.ts';
+import { apiGet, apiLogin, login, outboxStatuses, setup, sosStatus, startServer, throttleCpu, waitForServiceWorker, FIXTURES, type TestServer } from './helpers.ts';
 import { join } from 'node:path';
 
 let srv: TestServer;
@@ -35,9 +35,8 @@ async function makeReport(page: Page) {
   await expect(page.getByTestId('report-saved')).toBeVisible();
 }
 
-async function statuses(page: Page): Promise<string[]> {
-  return page.getByTestId('outbox-row').getByTestId('delivery-status').evaluateAll((els) => els.map((e) => e.getAttribute('data-status')!));
-}
+/** The phone's own outbox (there is no "Sent & waiting" page any more – decisions.md 12.12). */
+const statuses = (page: Page) => outboxStatuses(page);
 
 test('offline: shell from SW, SOS + report queued, persist across reload/tab, received only after ack', async ({ page, context }) => {
   await throttleCpu(context, page, 4);
@@ -50,19 +49,21 @@ test('offline: shell from SW, SOS + report queued, persist across reload/tab, re
   await page.reload();
   await expect(page.getByTestId('reach')).toHaveText(/Offline/);
   await sendSos(page);
-  await expect(page.getByTestId('sos-result').getByTestId('delivery-status')).toHaveAttribute('data-status', 'queued');
-  await expect(page.getByTestId('sos-result')).toContainText('Saved on this phone only');
+  await expect(sosStatus(page)).toHaveAttribute('data-status', 'queued');
+  await expect(page.getByTestId('sos-result')).toContainText('NOT reached the control room');
+  await expect(page.getByTestId('sos-result')).toContainText('sent automatically');
   await makeReport(page);
   await expect(page.getByTestId('report-saved').getByTestId('delivery-status')).toHaveAttribute('data-status', 'queued');
 
   // ---- reload + a brand-new tab: everything persisted, still queued
-  await page.goto(`${srv.url}/outbox`);
+  await page.goto(`${srv.url}/`);
   await page.reload();
-  await expect(page.getByTestId('outbox-row')).toHaveCount(3); // sos, report, provisional allotment
-  expect(await statuses(page)).toEqual(['queued', 'queued', 'queued']);
+  expect(await statuses(page)).toEqual(['queued', 'queued', 'queued']); // sos, report, provisional allotment
+  await expect(sosStatus(page)).toHaveAttribute('data-status', 'queued'); // Home: the message under the SOS button
+  await expect(page.getByTestId('my-reports').getByTestId('delivery-status')).toHaveAttribute('data-status', 'queued');
   const tab2 = await context.newPage();
-  await tab2.goto(`${srv.url}/outbox`);
-  await expect(tab2.getByTestId('outbox-row')).toHaveCount(3);
+  await tab2.goto(`${srv.url}/`);
+  await expect(sosStatus(tab2)).toHaveAttribute('data-status', 'queued');
   expect(await statuses(tab2)).toEqual(['queued', 'queued', 'queued']);
   await tab2.close();
 
@@ -78,13 +79,18 @@ test('offline: shell from SW, SOS + report queued, persist across reload/tab, re
     await gate;
     await route.fulfill({ response: resp });
   });
+  // NO button press: the phone notices the connection is back and sends by itself (decisions.md 12.4)
   await context.setOffline(false);
-  await page.getByTestId('sync-now').click({ timeout: 30_000 });
-  await expect.poll(() => statuses(page)).toContain('sent');
-  expect(await statuses(page)).not.toContain('received');
+  await expect.poll(() => statuses(page), { timeout: 30_000 }).toContain('sent');
+  // WebKit: a request that passes through the service worker can escape the hold above, so its
+  // REAL signed reply may arrive early. "sent ≠ received" is proven airtight on both engines by
+  // the honesty test (service worker blocked); here WebKit only checks the end state.
+  if (context.browser()?.browserType().name() !== 'webkit') expect(await statuses(page)).not.toContain('received');
   release();
   await expect.poll(() => statuses(page), { timeout: 30_000 }).toEqual(['received', 'received', 'received']);
-  await expect(page.getByTestId('outbox-row').first()).toContainText(/ref (SOS|RPT|ALT)-\d{6}/);
+  await expect(sosStatus(page)).toHaveAttribute('data-status', 'received');
+  await expect(page.getByTestId('sos-result')).toContainText(/reached the control room.*reference SOS-\d{6}/);
+  await expect(page.getByTestId('my-reports').getByTestId('delivery-status')).toHaveAttribute('data-status', 'received');
 
   // server has exactly one of each
   expect((await apiGet<unknown[]>(srv.url, '/admin/sos', admin)).length).toBe(1);
@@ -121,11 +127,12 @@ test('honesty: no ack, forged ack, or mismatched ack never shows received', asyn
   await sendSos(page);
   for (const m of ['empty', 'forged', 'mismatch'] as const) {
     mode = m;
-    await page.goto(`${srv.url}/outbox`);
-    await page.getByTestId('sync-now').click();
-    await expect(page.getByRole('status').filter({ hasText: /Tried/ })).toBeVisible();
+    const before = intercepted;
+    // sending is automatic: wait until the phone has tried again and got this fake answer
+    await expect.poll(() => intercepted, { timeout: 30_000 }).toBeGreaterThan(before);
     expect(await statuses(page)).not.toContain('received');
-    await expect(page.getByText(/Received by/)).toHaveCount(0);
+    await expect(page.getByTestId('sos-result')).toHaveAttribute('data-delivered', 'no');
+    await expect(page.getByText(/Your SOS reached the control room/)).toHaveCount(0);
   }
   expect(intercepted).toBeGreaterThanOrEqual(3); // the fakes really were served
   expect((await apiGet<unknown[]>(srv.url, '/admin/sos', admin)).length).toBe(sosBefore); // nothing reached the server
@@ -133,8 +140,8 @@ test('honesty: no ack, forged ack, or mismatched ack never shows received', asyn
   await context.unroute('**/api/sync');
   await context.unroute('**/api/mesh/upload');
   await context.unroute('**/api/photos/**');
-  await page.getByTestId('sync-now').click();
-  await expect.poll(() => statuses(page)).toEqual(['received']);
+  await expect.poll(() => statuses(page), { timeout: 30_000 }).toEqual(['received']);
+  await expect(page.getByTestId('sos-result')).toHaveAttribute('data-delivered', 'yes');
 });
 });
 
@@ -160,9 +167,9 @@ test('kill the tab mid-sync, then resume: one server record, status received', a
   expect((await apiGet<unknown[]>(srv.url, '/admin/sos', admin)).length).toBe(before + 1);
 
   const again = await context.newPage();
-  await again.goto(`${srv.url}/outbox`);
-  await again.getByTestId('sync-now').click();
+  await again.goto(`${srv.url}/`);
   await expect.poll(() => statuses(again), { timeout: 30_000 }).toContain('received');
+  await expect(sosStatus(again)).toHaveAttribute('data-status', 'received');
   expect((await apiGet<unknown[]>(srv.url, '/admin/sos', admin)).length).toBe(before + 1); // idempotent
 });
 });

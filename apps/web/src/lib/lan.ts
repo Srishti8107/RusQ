@@ -2,9 +2,13 @@
  * EXPERIMENTAL real peer-to-peer link (§2.2a, §8A transport 2).
  *
  * WebRTC data channel between browsers on the same Wi-Fi / hotspot with NO
- * internet: no STUN/TURN servers (host ICE candidates only), signalling by
- * copy-paste or QR code. Several peers can be connected at once; the relay
- * node forwards between them (store-and-forward).
+ * internet: no STUN/TURN servers (host ICE candidates only). Several peers can
+ * be connected at once; the relay node forwards between them (store-and-forward).
+ *
+ * Signalling (exchanging the connection offers):
+ *  - AUTOMATIC (autolink.ts, decisions.md 12.10): through the server while phones on the same
+ *    network can reach it; the link then keeps working without internet.
+ *  - fallback: copy-paste a code (QR codes were removed).
  *
  * Wire protocol on the data channel (JSON):
  *   {t:'hello', nodeId}            on open
@@ -15,10 +19,22 @@
 import type { MeshMessage, MeshSummary } from '@rusq/shared';
 import { getRelayNode, onRelayChange } from './relay.ts';
 import { markSentViaRelay } from './outbox.ts';
+import { db } from './db.ts';
+import { getSession } from './session.ts';
+import { toast } from './toast.ts';
+import { logTransfer } from './transferlog.ts';
 
 export interface Peer {
   id: string;
   remoteNodeId: string | null;
+  /** the other phone's user ID and name (from its hello) */
+  remoteUser?: string | null;
+  remoteName?: string | null;
+  /** set for automatic links: the node we expect at the other end */
+  expectedNodeId?: string;
+  /** automatic or code */
+  how: 'auto' | 'code';
+  createdAt: number;
   pc: RTCPeerConnection;
   dc: RTCDataChannel | null;
   state: 'connecting' | 'open' | 'closed';
@@ -94,6 +110,19 @@ function waitIce(pc: RTCPeerConnection, timeoutMs = 4000): Promise<void> {
 
 /* ------------------------------ connection ------------------------------ */
 
+/** Remove a dead link (closed / failed) without touching open ones. */
+export function forgetPeer(id: string) {
+  const p = peers.get(id);
+  if (!p) return;
+  try {
+    p.pc.close();
+  } catch {
+    /* already closed */
+  }
+  peers.delete(id);
+  notify();
+}
+
 /** Phone A: create an invitation code. */
 export async function createInvite(): Promise<{ peer: Peer; code: string }> {
   const pc = new RTCPeerConnection(RTC_CONFIG);
@@ -135,7 +164,7 @@ export function closePeer(id: string) {
 }
 
 function addPeer(pc: RTCPeerConnection): Peer {
-  const peer: Peer = { id: crypto.randomUUID(), remoteNodeId: null, pc, dc: null, state: 'connecting', sent: 0, received: 0 };
+  const peer: Peer = { id: crypto.randomUUID(), remoteNodeId: null, how: 'code', createdAt: Date.now(), pc, dc: null, state: 'connecting', sent: 0, received: 0 };
   peers.set(peer.id, peer);
   pc.addEventListener('connectionstatechange', () => {
     if (pc.connectionState === 'failed' || pc.connectionState === 'closed' || pc.connectionState === 'disconnected') {
@@ -153,7 +182,9 @@ function attachChannel(peer: Peer, dc: RTCDataChannel) {
     peer.state = 'open';
     notify();
     const n = await getRelayNode();
-    send(peer, { t: 'hello', nodeId: n?.id ?? 'unprovisioned' });
+    const s = await getSession();
+    // who we are, so the other phone can say "Receiving from <user ID>" (decisions.md 13.3)
+    send(peer, { t: 'hello', nodeId: n?.id ?? 'unprovisioned', user: s?.user.username ?? null, name: s?.user.name ?? null });
     await sendSummary(peer);
   };
   dc.onclose = () => {
@@ -172,8 +203,108 @@ async function sendSummary(peer: Peer, pull = true) {
   if (n) send(peer, { t: 'summary', seen: n.summary().seen, pull });
 }
 
+/* ------------------- what moved, in plain words (decisions.md 13.3) ------------------- */
+
+const KIND_NAME: Record<string, string> = { sos: 'SOS', report: 'field report', missing: 'missing-person report', allotment: 'provisional allotment' };
+
+/** "SOS, field report and 2 photos" */
+export function describeMessages(msgs: MeshMessage[]): string {
+  const counts = new Map<string, number>();
+  const photos = new Set<string>();
+  for (const m of msgs) {
+    if (m.type === 'photo_chunk' || m.type === 'photo_thumb') {
+      if (m.chunkInfo) photos.add(m.chunkInfo.photoId);
+    } else if (m.type !== 'ack') counts.set(m.type, (counts.get(m.type) ?? 0) + 1);
+  }
+  const parts = [...counts.entries()].map(([t, c]) => (c === 1 ? KIND_NAME[t] ?? t : `${c} ${KIND_NAME[t] ?? t}s`));
+  if (photos.size) parts.push(photos.size === 1 ? '1 photo' : `${photos.size} photos`);
+  if (parts.length <= 1) return parts[0] ?? '';
+  return `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`;
+}
+
+/** Whose message it is, from the content (the envelope only knows device ids). */
+function madeBy(msgs: MeshMessage[]): string {
+  const who = new Set<string>();
+  for (const m of msgs) {
+    const p = m.payload as { profile?: { name?: string }; teamId?: string; person?: { name?: string } };
+    if (m.type === 'sos' && p.profile?.name) who.add(p.profile.name);
+    if (m.type === 'report' && p.teamId) who.add(p.teamId);
+    if (m.type === 'missing' && p.person?.name) who.add(`about ${p.person.name}`);
+  }
+  return who.size ? ` (${[...who].join(', ')})` : '';
+}
+
+export function peerLabel(p: Peer): string {
+  return p.remoteUser ?? 'a nearby phone';
+}
+
+const incoming = new Map<string, { msgs: MeshMessage[]; hop: number; timer: ReturnType<typeof setTimeout> }>();
+
+/** Batch what one phone sends us for a moment, then show ONE "Receiving from …" message. */
+function noteIncoming(peer: Peer, m: MeshMessage) {
+  if (m.type === 'ack') return;
+  const cur = incoming.get(peer.id) ?? { msgs: [], hop: 0, timer: setTimeout(() => flushIncoming(peer), 700) };
+  cur.msgs.push(m);
+  cur.hop = Math.max(cur.hop, m.hops + 1);
+  incoming.set(peer.id, cur);
+}
+
+function flushIncoming(peer: Peer) {
+  const cur = incoming.get(peer.id);
+  incoming.delete(peer.id);
+  if (!cur) return;
+  const what = describeMessages(cur.msgs);
+  if (!what) return;
+  const label = peerLabel(peer);
+  toast({
+    kind: 'info',
+    title: `📥 Receiving from ${label}: ${what}${madeBy(cur.msgs)}`,
+    body: `Hop ${cur.hop} between phones. This phone keeps it and passes it on to the control room as soon as it has a connection.`,
+    tag: `in-${peer.id}`,
+  });
+  void logTransfer({ dir: 'in', peer: label, text: `${what}${madeBy(cur.msgs)}`, hops: cur.hop });
+}
+
+function noteOutgoing(peer: Peer, msgs: MeshMessage[], ownNodeId: string) {
+  const label = peerLabel(peer);
+  const own = msgs.filter((x) => x.originNodeId === ownNodeId);
+  const others = msgs.filter((x) => x.originNodeId !== ownNodeId);
+  const ownWhat = describeMessages(own);
+  const otherWhat = describeMessages(others);
+  if (ownWhat) {
+    toast({
+      kind: 'info',
+      title: `📶 Connected to ${label} and transferring your ${ownWhat}`,
+      body: 'No internet needed. It reaches the control room as soon as any phone in the chain has a connection.',
+      tag: `out-own-${peer.id}`,
+    });
+    void logTransfer({ dir: 'out', peer: label, text: `your ${ownWhat}`, hops: 1 });
+  }
+  if (otherWhat) {
+    toast({ kind: 'info', title: `📶 Connected to ${label} – passing on ${otherWhat} from other phones${madeBy(others)}`, tag: `out-fwd-${peer.id}` });
+    void logTransfer({ dir: 'out', peer: label, text: `${otherWhat} from other phones${madeBy(others)}`, hops: Math.max(...others.map((x) => x.hops + 1)) });
+  }
+}
+
+/** A signed control-room confirmation for one of OUR items arrived through another phone. */
+async function noteConfirmation(peer: Peer, m: MeshMessage) {
+  const ack = m.payload as { clientId?: string; serverId?: string; kind?: string };
+  if (!ack.clientId) return;
+  const own = await db.outbox.get(ack.clientId);
+  if (!own || own.status !== 'received') return;
+  const label = peerLabel(peer);
+  const what = KIND_NAME[own.kind] ?? own.kind;
+  toast({
+    kind: 'ok',
+    title: `✅ The control room confirmed your ${what} (${ack.serverId})`,
+    body: `The confirmation came back through ${label}'s phone – your phone never needed internet.`,
+    tag: `ack-${ack.clientId}`,
+  });
+  void logTransfer({ dir: 'confirm', peer: label, text: `control room confirmed your ${what} (${ack.serverId})` });
+}
+
 async function onMessage(peer: Peer, raw: string) {
-  let m: { t: string; nodeId?: string; seen?: string[]; pull?: boolean; m?: MeshMessage };
+  let m: { t: string; nodeId?: string; user?: string | null; name?: string | null; seen?: string[]; pull?: boolean; m?: MeshMessage };
   try {
     m = JSON.parse(raw);
   } catch {
@@ -183,12 +314,15 @@ async function onMessage(peer: Peer, raw: string) {
   if (!n) return;
   if (m.t === 'hello') {
     peer.remoteNodeId = m.nodeId ?? null;
+    peer.remoteUser = typeof m.user === 'string' ? m.user.slice(0, 40) : null;
+    peer.remoteName = typeof m.name === 'string' ? m.name.slice(0, 80) : null;
     notify();
   } else if (m.t === 'summary' && Array.isArray(m.seen)) {
     const summary: MeshSummary = { nodeId: peer.remoteNodeId ?? '?', seen: m.seen };
     const msgs = n.messagesFor(summary, 200);
     for (const msg of msgs) send(peer, { t: 'msg', m: msg });
     peer.sent += msgs.length;
+    if (msgs.length) noteOutgoing(peer, msgs, n.id);
     // Our own queued items are now "sent (via relay)" – never "received".
     await markSentViaRelay(msgs.filter((x) => x.originNodeId === n.id).map((x) => x.chunkInfo?.photoId ?? x.id));
     // 'pull' = the peer also wants to hear what WE lack, so it can push its new items.
@@ -198,6 +332,8 @@ async function onMessage(peer: Peer, raw: string) {
     const r = await n.receive(m.m);
     if (r.status === 'accepted') {
       peer.received++;
+      if (m.m.type === 'ack') await noteConfirmation(peer, m.m);
+      else noteIncoming(peer, m.m);
       notify();
       scheduleGossip();
     }

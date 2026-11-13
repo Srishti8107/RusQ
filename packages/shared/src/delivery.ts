@@ -15,7 +15,7 @@
  */
 import type { Ack, DeliveryStatus } from './schemas.ts';
 
-export type OutboxKind = 'sos' | 'report' | 'allotment' | 'photo';
+export type OutboxKind = 'sos' | 'report' | 'allotment' | 'photo' | 'missing';
 
 export interface DeliveryState {
   id: string;

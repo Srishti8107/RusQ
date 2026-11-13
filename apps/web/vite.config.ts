@@ -43,7 +43,9 @@ export default defineConfig({
       injectRegister: false,
       injectManifest: {
         globPatterns: ['**/*.{js,css,html,svg,png,woff2,webmanifest}'],
-        globIgnores: ['**/ort/**', '**/models/**', '**/fixtures/**'],
+        // Not precached: vision runtime/models (downloaded in setup), the map file (setup),
+        // and the optional AI-helper worker (several MB; fetched only if a user turns it on).
+        globIgnores: ['**/ort/**', '**/models/**', '**/fixtures/**', '**/map/**', '**/llm.worker-*.js'],
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
       },
       devOptions: { enabled: false },

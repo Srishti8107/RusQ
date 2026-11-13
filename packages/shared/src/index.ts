@@ -17,3 +17,10 @@ export * from './mesh/node.ts';
 export * from './mesh/rng.ts';
 export * from './mesh/simulator.ts';
 export * from './vision.ts';
+/* Phase 2 */
+export * from './geo.ts';
+export * from './profile.ts';
+export * from './missing.ts';
+export * from './cctv.ts';
+export * from './decision.ts';
+export * from './assist.ts';

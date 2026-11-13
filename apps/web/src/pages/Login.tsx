@@ -1,10 +1,15 @@
+/**
+ * Sign in. People needing help type only their USER ID (no password – decisions.md 12.2).
+ * Rescue-team and control-room accounts also type their password.
+ */
 import { useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { api, ApiError } from '../lib/api.ts';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { api, ApiError, friendlyError } from '../lib/api.ts';
 import { setSession, type Session } from '../lib/session.ts';
+import { pullProfile } from '../lib/profile.ts';
 
 export function Login() {
-  const [username, setUsername] = useState('');
+  const [userId, setUserId] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -16,11 +21,17 @@ export function Login() {
     setBusy(true);
     setError(null);
     try {
-      const s = await api<Session>('/auth/login', { method: 'POST', auth: false, body: JSON.stringify({ username: username.trim().toLowerCase(), password }) });
+      const s = await api<Session>('/auth/login', { method: 'POST', auth: false, body: JSON.stringify({ username: userId.trim().toLowerCase(), password }) });
       await setSession(s);
-      nav(params.get('next') && params.get('next') !== '/login' ? params.get('next')! : '/setup', { replace: true });
+      const next = params.get('next');
+      // The control room is always online – it does not need the "Ready for offline" step.
+      const home = s.user.role === 'admin' ? '/admin' : '/setup';
+      nav(next && next !== '/login' && next !== '/' ? next : home, { replace: true });
+      // Keep the server copy of the profile on the phone (works offline afterwards). In the background:
+      // awaiting it here let the /login route redirect to "/" before nav() ran (race seen on WebKit).
+      void pullProfile();
     } catch (e) {
-      setError(e instanceof ApiError && e.status === 0 ? 'No connection. Signing in needs internet once – after that RusQ works offline.' : (e as Error).message);
+      setError(e instanceof ApiError && e.status === 0 ? 'No connection. Signing in needs internet once – after that RusQ works offline.' : friendlyError(e));
     } finally {
       setBusy(false);
     }
@@ -32,21 +43,33 @@ export function Login() {
       <p>Sign in once while you have internet. After that, the app keeps working without a connection.</p>
       <form onSubmit={submit} className="card">
         <label className="field">
-          Username
-          <input autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} required name="username" />
+          Your user ID
+          <input autoComplete="username" value={userId} onChange={(e) => setUserId(e.target.value)} required name="userId" autoCapitalize="none" spellCheck={false} />
         </label>
         <label className="field">
-          Password
-          <input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required name="password" />
+          Password – only for rescue teams and the control room
+          <input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} name="password" />
         </label>
-        {error && <div className="banner bad" role="alert">{error}</div>}
+        <p className="small muted" style={{ marginTop: 0 }}>
+          People who registered for help: type your user ID and leave the password empty.
+        </p>
+        {error && (
+          <div className="banner bad" role="alert">
+            {error}
+          </div>
+        )}
         <button className="btn block" disabled={busy} type="submit">
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
       </form>
+      <div className="card">
+        <p style={{ margin: 0 }}>
+          New here? <Link to="/register">Register as a person who may need help</Link>
+        </p>
+      </div>
       <div className="card small">
-        <strong>Demo accounts</strong> (password <code>demo1234</code>): <code>asha</code> (person needing help), <code>ravi</code> /{' '}
-        <code>meena</code> (rescue teams), <code>admin</code> (control room).
+        <strong>Control room:</strong> user ID <code>admin</code>, password <code>demo1234</code> (sample setup – change it for real use). Rescue-team accounts
+        are created by the control room under <em>People &amp; teams</em>.
       </div>
     </div>
   );

@@ -10,6 +10,7 @@ import {
   type Allotment,
   type DeliveryEvent,
   type FieldReport,
+  type MissingReport,
   type Sos,
 } from '@rusq/shared';
 import { db, safeWrite, type OutboxRow, type PhotoRow } from './db.ts';
@@ -24,6 +25,10 @@ export async function queueReport(r: FieldReport): Promise<OutboxRow> {
 }
 export async function queueAllotment(a: Allotment): Promise<OutboxRow> {
   return queueRecord('allotment', a);
+}
+/** Phase 2: a family's missing-person report – same honest queued → sent → received path. */
+export async function queueMissing(m: MissingReport): Promise<OutboxRow> {
+  return queueRecord('missing', m);
 }
 
 async function queueRecord(kind: OutboxRow['kind'], data: OutboxRow['data']): Promise<OutboxRow> {

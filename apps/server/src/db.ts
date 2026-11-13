@@ -116,12 +116,66 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 
 CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, n INTEGER NOT NULL);
+
+-- ---------------------------- Phase 2 ----------------------------
+
+-- Family missing-person reports + the workflow state (shared/missing.ts).
+CREATE TABLE IF NOT EXISTS missing_reports (
+  id TEXT PRIMARY KEY,
+  server_id TEXT UNIQUE NOT NULL,
+  reporter_id TEXT NOT NULL,
+  data TEXT NOT NULL,
+  via TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'reported'
+    CHECK (state IN ('reported','candidate_found','under_review','verified','announced')),
+  candidates TEXT NOT NULL DEFAULT '[]',
+  verified_by TEXT,
+  reviewer_id TEXT,
+  announced_at TEXT,
+  received_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- SAMPLE registry of people registered at shelters (fictional, no photos).
+CREATE TABLE IF NOT EXISTS found_persons (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+
+-- Administrator decisions on decision-support recommendations (the rec is stored as shown).
+CREATE TABLE IF NOT EXISTS rec_decisions (
+  rec_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  decision TEXT NOT NULL CHECK (decision IN ('approve','reject')),
+  actor_id TEXT NOT NULL,
+  actor_name TEXT NOT NULL,
+  note TEXT,
+  rec TEXT NOT NULL,
+  decided_at TEXT NOT NULL
+);
 `;
+
+/** Columns added after Phase 1 – added in place so an existing database keeps its data. */
+const MIGRATIONS: { table: string; column: string; ddl: string }[] = [
+  { table: 'sos', column: 'assigned_team', ddl: 'ALTER TABLE sos ADD COLUMN assigned_team TEXT' },
+  { table: 'sos', column: 'ops_note', ddl: 'ALTER TABLE sos ADD COLUMN ops_note TEXT' },
+  { table: 'sos', column: 'status_by', ddl: 'ALTER TABLE sos ADD COLUMN status_by TEXT' },
+  { table: 'sos', column: 'status_at', ddl: 'ALTER TABLE sos ADD COLUMN status_at TEXT' },
+  { table: 'users', column: 'disabled', ddl: 'ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0' },
+  // decisions.md 13.3: how a relayed record travelled (number of phone-to-phone hops, uploading phone's user)
+  { table: 'sos', column: 'relay_hops', ddl: 'ALTER TABLE sos ADD COLUMN relay_hops INTEGER' },
+  { table: 'sos', column: 'relay_gateway', ddl: 'ALTER TABLE sos ADD COLUMN relay_gateway TEXT' },
+  { table: 'reports', column: 'relay_hops', ddl: 'ALTER TABLE reports ADD COLUMN relay_hops INTEGER' },
+  { table: 'reports', column: 'relay_gateway', ddl: 'ALTER TABLE reports ADD COLUMN relay_gateway TEXT' },
+  { table: 'missing_reports', column: 'relay_hops', ddl: 'ALTER TABLE missing_reports ADD COLUMN relay_hops INTEGER' },
+  { table: 'missing_reports', column: 'relay_gateway', ddl: 'ALTER TABLE missing_reports ADD COLUMN relay_gateway TEXT' },
+];
 
 export function openDb(path: string): Db {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec(SCHEMA);
+  for (const m of MIGRATIONS) {
+    const cols = (db.prepare(`PRAGMA table_info(${m.table})`).all() as { name: string }[]).map((c) => c.name);
+    if (!cols.includes(m.column)) db.exec(m.ddl);
+  }
   return db;
 }
 

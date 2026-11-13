@@ -25,7 +25,13 @@ export function usePhotos(reportId?: string): PhotoRow[] {
 
 export function useReach(): Reach {
   const [r, setR] = useState<Reach>(currentReach());
-  useEffect(() => onReachChange(setR), []);
+  useEffect(() => {
+    const off = onReachChange(setR);
+    // A change between the first render and this subscription would otherwise be missed, leaving
+    // this screen stuck on the old state while the header shows the new one (decisions.md 12.1).
+    setR(currentReach());
+    return off;
+  }, []);
   return r;
 }
 

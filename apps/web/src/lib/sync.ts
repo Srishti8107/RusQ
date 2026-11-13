@@ -9,8 +9,8 @@
  * and `received` ONLY when outbox.applyAck() verified the server's signature.
  */
 import { backoffMs, type Ack, type SyncResponse } from '@rusq/shared';
-import { api, ApiError } from './api.ts';
-import { probe } from './connectivity.ts';
+import { api, ApiError, friendlyError, NO_CONNECTION } from './api.ts';
+import { onReachChange, probe } from './connectivity.ts';
 import { db } from './db.ts';
 import { ensureAckKey } from './keys.ts';
 import { applyAck, applyEvent } from './outbox.ts';
@@ -58,6 +58,27 @@ async function registerBackgroundSync() {
   }
 }
 
+/**
+ * Connection is back → everything waiting is due NOW (decisions.md 12.4). Without this, an item
+ * that failed on a flaky link waited out its backoff (up to 5 minutes) even though the
+ * connection had returned – which is why people pressed "Send now".
+ */
+export async function makeAllDue(): Promise<number> {
+  const now = Date.now();
+  let n = 0;
+  await db.transaction('rw', db.outbox, db.photos, async () => {
+    for (const t of [db.outbox, db.photos] as const) {
+      const rows = (await t.where('nextAttemptAt').above(now).toArray()) as { id: string; status: string }[];
+      for (const r of rows) {
+        if (r.status === 'received') continue;
+        await t.update(r.id, { nextAttemptAt: now });
+        n++;
+      }
+    }
+  });
+  return n;
+}
+
 async function doSync(reason: string): Promise<SyncResult> {
   const res: SyncResult = { attempted: 0, received: 0, failed: 0, relayUploaded: 0 };
   if ((await probe()) !== 'online') return { ...res, skipped: 'offline' };
@@ -65,8 +86,8 @@ async function doSync(reason: string): Promise<SyncResult> {
   if (!(await ensureAckKey())) return { ...res, skipped: 'no server key – cannot verify acks' };
 
   const now = Date.now();
-  // SOS first, then reports, then allotments; oldest first within a kind.
-  const order = { sos: 0, report: 1, allotment: 2 } as const;
+  // SOS first, then missing-person reports, reports, allotments; oldest first within a kind.
+  const order = { sos: 0, missing: 1, report: 2, allotment: 3 } as const;
   const due = (await db.outbox.where('nextAttemptAt').belowOrEqual(now).toArray())
     .filter((r) => r.status !== 'received')
     .sort((a, b) => order[a.kind] - order[b.kind] || a.createdAt.localeCompare(b.createdAt));
@@ -107,14 +128,28 @@ async function doSync(reason: string): Promise<SyncResult> {
         headers: { authorization: `Bearer ${s?.token}`, 'content-type': p.mime, 'x-report-id': p.reportId },
         body: p.bytes,
       });
-      if (!r.ok) throw new ApiError(r.status, await r.text());
-      const ack = (await r.json()) as Ack;
+      const text = await r.text();
+      let ack: Ack;
+      try {
+        ack = JSON.parse(text) as Ack;
+      } catch {
+        throw new ApiError(0, NO_CONNECTION); // proxy / tunnel error page, not the server
+      }
+      if (!r.ok) throw new ApiError(r.status, (ack as unknown as { error?: string }).error ?? `error ${r.status}`);
       if (await applyAck(ack)) res.received++;
       await relayLearn([ack]);
     } catch (e) {
       await failBatch([p], e);
       res.failed++;
     }
+  }
+
+  // Profile edits made offline (Phase 2).
+  try {
+    const { uploadProfileIfDirty } = await import('./profile.ts');
+    await uploadProfileIfDirty();
+  } catch {
+    /* retried next round */
   }
 
   // Gateway behaviour: upload what nearby phones handed us over the LAN link.
@@ -124,12 +159,13 @@ async function doSync(reason: string): Promise<SyncResult> {
   } catch {
     /* relay not provisioned */
   }
+  if (res.received > 0) void notifyDelivered().catch(() => {});
   void reason;
   return res;
 }
 
 async function failBatch(rows: { id: string; attempts: number }[], e: unknown) {
-  const msg = e instanceof ApiError ? (e.status ? `Server error ${e.status}: ${e.message}` : 'No connection') : String(e);
+  const msg = e instanceof ApiError ? (e.status ? `Server error ${e.status}: ${friendlyError(e)}` : 'No connection') : friendlyError(e);
   for (const r of rows) {
     await applyEvent(r.id, { type: 'send_failed', error: msg, nextAttemptAt: Date.now() + backoffMs(r.attempts, Math.random()) });
   }
@@ -151,21 +187,69 @@ async function relayLearn(acks: Ack[]) {
 let timer: ReturnType<typeof setTimeout> | null = null;
 let idleRounds = 0;
 
-/** Page-side retry loop: backs off while nothing changes, resets on events. */
+/**
+ * Page-side loop. Sends AUTOMATICALLY – there is no "Send now" button any more:
+ *  - the moment the connectivity check sees the server again (offline → online),
+ *  - when the app comes back to the screen, right after something is queued,
+ *  - and on a timer (every 5 s while something is waiting, backing off to 60 s when idle).
+ */
 export function startSyncScheduler() {
   const kick = () => {
     idleRounds = 0;
-    void syncNow('event');
+    void makeAllDue().then(() => syncNow('event'));
   };
   window.addEventListener('online', kick);
+  onReachChange((r) => {
+    if (r === 'online') kick();
+  });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') kick();
   });
   const loop = async () => {
     const r = await syncNow('timer').catch(() => null);
     idleRounds = r && r.received > 0 ? 0 : idleRounds + 1;
-    timer = setTimeout(loop, backoffMs(Math.min(idleRounds, 6), Math.random(), 5000, 120_000));
+    const waiting = (await db.outbox.filter((x) => x.status !== 'received').count().catch(() => 0)) > 0;
+    timer = setTimeout(loop, waiting ? 5000 : backoffMs(Math.min(idleRounds, 6), Math.random(), 5000, 60_000));
   };
   if (!timer) timer = setTimeout(loop, 1000);
   kick();
+}
+
+/* ------------------- "your SOS reached the server" notice ------------------- */
+
+/**
+ * When an SOS that could NOT be delivered straight away (the phone was offline) is finally
+ * confirmed by the server, tell the person with a system notification – they may have left the
+ * app. Runs in the page and in the service worker (Background Sync). Each SOS is announced once.
+ */
+/** An SOS confirmed later than this after it was pressed counts as "could not be sent at once". */
+export const DELAYED_MS = 10_000;
+
+export async function notifyDelivered(): Promise<void> {
+  const { kvGet, kvSet } = await import('./db.ts');
+  const done = new Set((await kvGet<string[]>('notifiedSos')) ?? []);
+  const rows = await db.outbox.where('kind').equals('sos').toArray();
+  const fresh = rows.filter((r) => r.status === 'received' && r.ack && !done.has(r.id));
+  if (!fresh.length) return;
+  for (const r of fresh) {
+    done.add(r.id);
+    const delayed = Date.parse(r.ack!.receivedAt) - Date.parse(r.createdAt) > DELAYED_MS;
+    if (!delayed) continue; // sent at once – the screen already shows it
+    await showNotice('✅ Your SOS reached the control room', `Reference ${r.ack!.serverId}. Rescuers can now see your location and details.`, r.id);
+  }
+  await kvSet('notifiedSos', [...done].slice(-200));
+}
+
+async function showNotice(title: string, body: string, tag: string) {
+  try {
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    const reg =
+      typeof (globalThis as { registration?: ServiceWorkerRegistration }).registration !== 'undefined'
+        ? (globalThis as unknown as { registration: ServiceWorkerRegistration }).registration
+        : await navigator.serviceWorker?.getRegistration();
+    if (reg) await reg.showNotification(title, { body, tag, icon: '/icons/sos-192.png', badge: '/icons/icon-192.png' });
+    else new Notification(title, { body, tag });
+  } catch {
+    /* notifications unavailable – the in-app message below the SOS button still shows it */
+  }
 }

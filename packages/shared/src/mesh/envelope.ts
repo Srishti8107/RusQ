@@ -9,12 +9,12 @@
  */
 import { z } from 'zod';
 import { canonicalJson } from '../canonical.ts';
-import { Ack, Allotment, FieldReport, Sos, Uuid } from '../schemas.ts';
+import { Ack, Allotment, FieldReport, MissingReport, Sos, Uuid } from '../schemas.ts';
 import { HLC_RE } from './hlc.ts';
 import { hmacSign, hmacVerify } from './crypto.ts';
 
 export const MESH_PROTOCOL_VERSION = 1;
-export const MESH_TYPES = ['sos', 'ack', 'allotment', 'report', 'photo_thumb', 'photo_chunk'] as const;
+export const MESH_TYPES = ['sos', 'ack', 'allotment', 'report', 'photo_thumb', 'photo_chunk', 'missing'] as const;
 export type MeshType = (typeof MESH_TYPES)[number];
 
 /** Lower number = sent first. SOS/acks/allotments are small and urgent; photos last. */
@@ -23,6 +23,7 @@ export const DEFAULT_PRIORITY: Record<MeshType, number> = {
   ack: 0,
   allotment: 1,
   report: 1,
+  missing: 1,
   photo_thumb: 2,
   photo_chunk: 3,
 };
@@ -67,6 +68,7 @@ const PAYLOAD_SCHEMA: Record<MeshType, z.ZodTypeAny> = {
   sos: Sos,
   report: FieldReport,
   allotment: Allotment,
+  missing: MissingReport,
   ack: Ack,
   photo_thumb: PhotoPayload,
   photo_chunk: PhotoPayload,
@@ -86,7 +88,7 @@ export function validateEnvelope(raw: unknown): EnvelopeCheck {
   if (m.chunkInfo && m.chunkInfo.index >= m.chunkInfo.total) return { ok: false, reason: 'chunk index out of range' };
   if (m.hops > m.ttl) return { ok: false, reason: 'hops exceed ttl' };
   // For record-carrying messages the envelope id IS the record id → acks map 1:1.
-  if ((m.type === 'sos' || m.type === 'report' || m.type === 'allotment') && (m.payload as { id: string }).id !== m.id) {
+  if ((m.type === 'sos' || m.type === 'report' || m.type === 'allotment' || m.type === 'missing') && (m.payload as { id: string }).id !== m.id) {
     return { ok: false, reason: 'envelope id must equal record id' };
   }
   if (approxSize(m) > MAX_ENVELOPE_BYTES) return { ok: false, reason: 'envelope too large' };

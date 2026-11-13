@@ -5,15 +5,32 @@
  * Tables
  *  outbox : records + their delivery state (queued → sent → received)
  *  photos : downscaled JPEG + 320 px thumbnail blobs, linked to a report
- *  kv     : session, keys, snapshot, last location, settings, mesh node state
+ *  kv       : session, keys, snapshot, last location, settings, mesh node state, profile,
+ *             cached server views (admin dashboard etc., for offline reading)
+ *  shelters : shelter list for the offline map (Phase 2)
  */
 import Dexie, { type Table } from 'dexie';
-import type { Allotment, DeliveryState, FieldReport, OutboxKind, Snapshot, Sos } from '@rusq/shared';
+import type { Allotment, DeliveryState, FieldReport, MissingReport, OutboxKind, Snapshot, Sos } from '@rusq/shared';
 
 export interface OutboxRow extends DeliveryState {
   kind: Exclude<OutboxKind, 'photo'>;
   createdAt: string;
-  data: Sos | FieldReport | Allotment;
+  data: Sos | FieldReport | Allotment | MissingReport;
+}
+
+/** A shelter as cached for the offline map (sample data from the server). */
+export interface ShelterRow {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  capacity: number | null;
+  occupancy: number;
+  free: number | null;
+  address: string;
+  phone: string;
+  facilities: string[];
+  sample: boolean;
 }
 
 export interface PhotoRow extends DeliveryState {
@@ -39,6 +56,7 @@ class RusqDb extends Dexie {
   outbox!: Table<OutboxRow, string>;
   photos!: Table<PhotoRow, string>;
   kv!: Table<KvRow, string>;
+  shelters!: Table<ShelterRow, string>;
 
   constructor() {
     super('rusq');
@@ -47,6 +65,8 @@ class RusqDb extends Dexie {
       photos: 'id, reportId, status, nextAttemptAt',
       kv: 'key',
     });
+    // Phase 2: shelters for the offline map. Existing data is kept (Dexie upgrade).
+    this.version(2).stores({ shelters: 'id' });
   }
 }
 
@@ -77,6 +97,11 @@ export const K = {
   meshState: 'meshState',
   visionReady: 'visionReady',
   profile: 'profile',
+  /** true while a locally edited profile has not been confirmed by the server */
+  profileDirty: 'profileDirty',
+  profileSavedAt: 'profileSavedAt',
+  sheltersFetchedAt: 'sheltersFetchedAt',
+  assistant: 'assistant',
 } as const;
 
 export type CachedSnapshot = Snapshot;

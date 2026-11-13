@@ -24,7 +24,7 @@ export default defineConfig({
     serviceWorkers: 'allow',
   },
   projects: [
-    { name: 'pixel', use: { ...devices['Pixel 7'], permissions: ['geolocation'], geolocation: { latitude: 26.1612, longitude: 91.7795 } } },
-    { name: 'iphone', use: { ...devices['iPhone 13'], permissions: ['geolocation'], geolocation: { latitude: 26.1612, longitude: 91.7795 } } },
+    { name: 'pixel', use: { ...devices['Pixel 7'], permissions: ['geolocation'], geolocation: { latitude: 27.6912, longitude: 85.3195 } } },
+    { name: 'iphone', use: { ...devices['iPhone 13'], permissions: ['geolocation'], geolocation: { latitude: 27.6912, longitude: 85.3195 } } },
   ],
 });

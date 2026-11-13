@@ -5,7 +5,6 @@
  *  - axe accessibility scan on every Phase 1 screen
  *  - Chrome's own installability verdict (CDP Page.getInstallabilityErrors) + manifest
  *  - cold start offline after the browser was fully closed (persistent profile)
- *  - Mesh Lab (SIMULATED) delivers a message end to end in the UI
  */
 import { chromium, expect, test } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
@@ -67,9 +66,7 @@ test('accessibility: no serious/critical axe violations on Phase 1 screens', asy
     ['home', '/'],
     ['sos', '/sos'],
     ['report', '/report'],
-    ['outbox', '/outbox'],
     ['nearby', '/nearby'],
-    ['mesh-lab', '/mesh-lab'],
     ['settings', '/settings'],
   ]) {
     screens.push([name, path]);
@@ -102,7 +99,7 @@ test('installable: Chrome reports no installability errors; manifest has SOS sho
 test('cold start offline after the browser was closed (persistent profile)', async ({ browserName }) => {
   test.skip(browserName !== 'chromium', 'persistent profile test runs on Chromium');
   const dir = mkdtempSync(join(tmpdir(), 'rusq-profile-'));
-  let ctx = await chromium.launchPersistentContext(dir, { permissions: ['geolocation'], geolocation: { latitude: 26.16, longitude: 91.78 } });
+  let ctx = await chromium.launchPersistentContext(dir, { permissions: ['geolocation'], geolocation: { latitude: 27.69, longitude: 85.32 } });
   let page = ctx.pages()[0] ?? (await ctx.newPage());
   await login(page, srv.url, 'asha');
   await setup(page, ['shell', 'keys', 'shelters']);
@@ -116,19 +113,7 @@ test('cold start offline after the browser was closed (persistent profile)', asy
   await expect(page.getByRole('heading', { name: /Hello, Asha/ })).toBeVisible();
   await page.goto(`${srv.url}/sos`);
   await page.getByTestId('sos-button').click();
-  await expect(page.getByTestId('sos-result')).toContainText('Saved on this phone only', { timeout: 20_000 });
+  await expect(page.getByTestId('sos-result')).toContainText('NOT reached the control room', { timeout: 20_000 });
   await ctx.close();
 });
 
-test('Mesh Lab (SIMULATED) delivers an SOS end to end', async ({ page }) => {
-  await login(page, srv.url, 'ravi');
-  await page.goto(`${srv.url}/mesh-lab`);
-  await expect(page.getByText('SIMULATED').first()).toBeVisible();
-  await expect(page.getByTestId('meshlab-canvas')).toBeVisible();
-  // Max radio range so the seeded topology is connected; pick a non-gateway phone.
-  await page.getByLabel(/Radio range/).fill('60');
-  await page.getByTestId('meshlab-pick').selectOption('n07');
-  await page.getByTestId('meshlab-sos').click();
-  for (let i = 0; i < 80 && (await page.getByTestId('meshlab-delivered').textContent()) === '0'; i++) await page.getByTestId('meshlab-step').click();
-  await expect(page.getByTestId('meshlab-delivered')).not.toHaveText('0');
-});

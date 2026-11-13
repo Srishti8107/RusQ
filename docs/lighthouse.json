@@ -2,14 +2,14 @@
   "/login": {
     "lighthouseVersion": "12.8.2",
     "scores": {
-      "performance": 98,
+      "performance": 97,
       "accessibility": 100,
       "best-practices": 100,
       "seo": 100
     },
     "metrics": {
-      "FCP_ms": 1753,
-      "LCP_ms": 2154,
+      "FCP_ms": 1900,
+      "LCP_ms": 2148,
       "TBT_ms": 0,
       "CLS": 0
     },
@@ -22,6 +22,7 @@
       "cpuSlowdownMultiplier": 4
     },
     "failedAudits": [
+      "first-contentful-paint (0.87)",
       "render-blocking-resources (0)",
       "unused-javascript (0)",
       "uses-responsive-images (0.5)",

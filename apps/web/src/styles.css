@@ -194,3 +194,98 @@ canvas.meshlab { width: 100%; aspect-ratio: 1 / 1; max-height: 70vh; background:
 @media (min-width: 720px) {
   .big-actions { grid-template-columns: 1fr 1fr; }
 }
+
+/* ---------- Phase 2: maps ---------- */
+.map-wrap { margin: 8px 0 12px; }
+.map { width: 100%; border: 2px solid var(--line); border-radius: var(--radius); overflow: hidden; background: #eef2ef; }
+.map-marker {
+  font: inherit; font-weight: 700; font-size: 0.8rem; line-height: 1.1; max-width: 150px;
+  padding: 4px 8px; min-height: 32px; border-radius: 10px; border: 2px solid #fff; color: #fff; cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.map-marker.shelter { background: var(--brand); }
+.map-marker.me { background: #123c7a; }
+.map-marker.me-old { background: #6b4a00; }
+.map-marker.sos { background: var(--sos); }
+.map-marker.report { background: #5c3a1a; }
+.map-marker.cctv { background: var(--sim); }
+.map-popup { font-size: 0.9rem; white-space: pre-line; color: var(--ink); }
+.maplibregl-ctrl-group button { width: 44px !important; height: 44px !important; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 14px; font-size: 0.85rem; margin: 6px 0; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 16px; height: 16px; border-radius: 4px; display: inline-block; border: 1px solid #0003; }
+
+/* ---------- Phase 2: dashboard ---------- */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.stat { background: #fff; border: 2px solid var(--line); border-radius: var(--radius); padding: 10px 12px; }
+.stat b { display: block; font-size: 1.7rem; line-height: 1.1; }
+.stat span { font-size: 0.85rem; color: var(--ink-soft); }
+.stat.alert { border-color: var(--sos); }
+.stat.alert b { color: var(--sos); }
+.sev { display: inline-block; padding: 2px 10px; border-radius: 6px; font-weight: 700; font-size: 0.8rem; border: 2px solid; }
+.sev.critical { background: var(--area-critical); color: #fff; border-color: var(--area-critical); }
+.sev.high { background: var(--area-high); color: #000; border-color: #7a3f3c; }
+.sev.medium { background: var(--area-affected); color: var(--area-critical); border-color: var(--area-high); }
+.sev.low { background: #fff; color: var(--ink-soft); border-color: var(--line); }
+.level { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%; font-weight: 700; color: #fff; background: var(--ink-soft); }
+.level.l5 { background: var(--area-critical); }
+.level.l4 { background: var(--sos); }
+.level.l3 { background: var(--area-high); }
+.bars { display: flex; align-items: flex-end; gap: 3px; height: 120px; border-bottom: 2px solid var(--line); }
+.bars > div { flex: 1; display: flex; flex-direction: column-reverse; gap: 1px; min-width: 6px; }
+.bars .b-sos { background: var(--sos); }
+.bars .b-rep { background: var(--brand); }
+.hbar { height: 14px; border-radius: 4px; background: var(--brand); display: block; }
+.hbar.req { background: var(--area-high); }
+.reason-list { margin: 6px 0 0; padding-left: 20px; font-size: 0.9rem; }
+.reason-list li { margin: 2px 0; }
+.tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.tabs button { min-height: 48px; padding: 6px 14px; border-radius: 10px; border: 2px solid var(--line); background: #fff; font: inherit; font-weight: 700; }
+.tabs button[aria-pressed='true'] { background: var(--brand); color: #fff; border-color: var(--brand); }
+.state-steps { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.state-steps span { padding: 3px 8px; border-radius: 6px; font-size: 0.8rem; font-weight: 700; border: 2px solid var(--line); color: var(--ink-soft); }
+.state-steps span.done { background: var(--ok-bg); color: var(--ok); border-color: var(--ok); }
+.state-steps span.now { background: var(--brand); color: #fff; border-color: var(--brand); }
+canvas.cctv { width: 100%; aspect-ratio: 16 / 9; background: #1b2420; border-radius: var(--radius); border: 3px solid var(--sim); }
+.photo-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.photo-grid img { width: 140px; height: 105px; object-fit: cover; border-radius: 8px; border: 2px solid var(--line); }
+
+/* ---------- Labels always stay inside their boxes (decisions.md 12.6) ----------
+   Long words ("Recommendations") used to spill out of nav buttons on phones. Every text box
+   may now shrink, wraps between words, and hyphenates a word only if it still does not fit.
+   tests/e2e/layout.spec.ts checks every screen at phone width for text sticking out. */
+.btn, .nav a, .nav button, .tabs button, .big-action, .check, .pill, .status, .banner, .card, .field, td, th, legend, label {
+  overflow-wrap: break-word; hyphens: auto; min-width: 0;
+}
+.btn, .tabs button, .nav button { white-space: normal; max-width: 100%; line-height: 1.2; }
+.nav { grid-template-columns: repeat(auto-fill, minmax(min(100%, 148px), 1fr)); }
+.nav a { flex-direction: column; gap: 2px; padding: 6px; font-size: 0.9rem; line-height: 1.15; }
+.nav .nav-icon { font-size: 1.3rem; line-height: 1; }
+.nav .nav-label { display: block; max-width: 100%; }
+.big-action .text { min-width: 0; flex: 1; }
+.big-action .icon { flex: none; }
+.grid2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 420px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+.row > * { min-width: 0; max-width: 100%; }
+.header-right .pill.user { max-width: 100%; overflow-wrap: anywhere; }
+.sos-status { width: 100%; text-align: left; }
+.block-line { display: block; margin-top: 6px; }
+.nav-below { border-top: 2px solid var(--line); background: var(--neutral); }
+.nav-below .nav { border-bottom: 0; }
+.nav-below-title { margin: 0; padding: 12px 16px 0; font-size: 1.1rem; }
+/* found by tests/e2e/changes.spec.ts at 360 px: long single words next to a quantity box, and sliders */
+.check > span { min-width: 0; flex: 1 1 auto; }
+.check .qty { width: 92px; }
+input[type='range'] { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; margin-inline: 0; padding-inline: 0; }
+
+/* ---------- pop-up messages (toasts) – decisions.md 13.3 / 13.4 ---------- */
+.popups { position: fixed; z-index: 50; left: 50%; transform: translateX(-50%); top: 8px; width: min(560px, calc(100vw - 16px)); display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+.popup { pointer-events: auto; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 14px; border: 3px solid var(--brand); background: #fff; color: var(--ink); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25); }
+.popup .popup-text { display: flex; flex-direction: column; gap: 2px; overflow-wrap: break-word; min-width: 0; }
+.popup.sos { border-color: var(--sos); background: var(--bad-bg); }
+.popup.sos strong { color: var(--sos); }
+.popup.ok { border-color: var(--ok); background: var(--ok-bg); }
+.popup.warn { border-color: var(--warn); background: var(--warn-bg); }
+.popup.info { border-color: #123c7a; background: #e5eefc; }
+/* tables scroll sideways inside .table-wrap: never break short words like "admin" inside a cell */
+td, th { overflow-wrap: normal; hyphens: manual; }

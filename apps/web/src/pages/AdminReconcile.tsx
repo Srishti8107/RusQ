@@ -5,7 +5,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { RESOURCE_KEYS, RESOURCES, type Allotment, type ResourceKey, type ResourceQty } from '@rusq/shared';
-import { api } from '../lib/api.ts';
+import { api, friendlyError } from '../lib/api.ts';
 import { useReach } from '../lib/hooks.ts';
 
 interface Rec {
@@ -28,7 +28,7 @@ export function AdminReconcile() {
       setAudit(await api('/admin/audit'));
       setError(null);
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError(e));
     }
   }, []);
 
@@ -41,7 +41,7 @@ export function AdminReconcile() {
       await api(`/admin/allotments/${id}/decision`, { method: 'POST', body: JSON.stringify({ decision, approvedClaim, note }) });
       await load();
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError(e));
     }
   }
 

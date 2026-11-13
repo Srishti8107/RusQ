@@ -11,3 +11,4 @@ apps/web/public/models/
 apps/web/.model-cache/
 apps/web/public/ort/
 tests/fixtures/vision-candidates/
+apps/web/.map-cache/

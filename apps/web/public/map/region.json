@@ -1,0 +1,14 @@
+{
+  "name": "Kathmandu sample region (Nepal)",
+  "bounds": [
+    85.28,
+    27.67,
+    85.37,
+    27.745
+  ],
+  "minzoom": 10,
+  "maxzoom": 15,
+  "bytes": 866029,
+  "attribution": "© OpenStreetMap contributors (ODbL)",
+  "osmBase": "2026-11-13T06:52:38Z"
+}
