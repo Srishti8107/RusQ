@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.tools/
+apps/server/data/
+test-results/
+playwright-report/
+*.log
+.vite/
+coverage/
+apps/web/public/models/
+apps/web/.model-cache/
+apps/web/public/ort/
+tests/fixtures/vision-candidates/

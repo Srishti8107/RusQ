@@ -1,0 +1,33 @@
+{
+  "/login": {
+    "lighthouseVersion": "12.8.2",
+    "scores": {
+      "performance": 98,
+      "accessibility": 100,
+      "best-practices": 100,
+      "seo": 100
+    },
+    "metrics": {
+      "FCP_ms": 1753,
+      "LCP_ms": 2154,
+      "TBT_ms": 0,
+      "CLS": 0
+    },
+    "throttling": {
+      "rttMs": 150,
+      "throughputKbps": 1638.4,
+      "requestLatencyMs": 562.5,
+      "downloadThroughputKbps": 1474.5600000000002,
+      "uploadThroughputKbps": 675,
+      "cpuSlowdownMultiplier": 4
+    },
+    "failedAudits": [
+      "render-blocking-resources (0)",
+      "unused-javascript (0)",
+      "uses-responsive-images (0.5)",
+      "image-delivery-insight (0.5)",
+      "network-dependency-tree-insight (0)",
+      "render-blocking-insight (0)"
+    ]
+  }
+}

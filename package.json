@@ -1,0 +1,34 @@
+{
+  "name": "rusq",
+  "private": true,
+  "version": "0.1.0",
+  "description": "RusQ (spec: ResQGrid) - offline-first disaster-response PWA",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "workspaces": [
+    "packages/shared",
+    "apps/server",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev -w @rusq/server",
+    "dev:web": "npm run dev -w @rusq/web",
+    "build": "npm run build -w @rusq/web && npm run build -w @rusq/server",
+    "start": "npm run start -w @rusq/server",
+    "typecheck": "tsc -p packages/shared && tsc -p apps/server && tsc -p apps/web",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "seed": "npm run seed -w @rusq/server"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
+    "@playwright/test": "^1.65.0",
+    "@types/node": "^22.20.5",
+    "fast-check": "^3.23.2",
+    "lighthouse": "^12.8.2",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}

@@ -1,0 +1,119 @@
+{
+  "runner": "node (onnxruntime-node CPU) – same vision-core.ts as the app",
+  "date": "2026-11-12T23:25:11.239Z",
+  "fixtures": 52,
+  "models": "Xenova/clip-vit-base-patch32 vision (q8) + precomputed text embeds; Xenova/yolos-tiny (q8)",
+  "topHazardAccuracy": 0.846,
+  "target": {
+    "topHazardAccuracy": 0.7,
+    "warmLatencyMs": 5000
+  },
+  "hazardTagRecall": 0.907,
+  "coldMs": {
+    "modelLoad": 532,
+    "firstAnalysis": 212
+  },
+  "warmMedianMs": 194,
+  "warmP90Ms": 227,
+  "peakRssMB": 526,
+  "perLabel": [
+    {
+      "label": "flooded street",
+      "support": 10,
+      "precision": 1,
+      "recall": 0.9
+    },
+    {
+      "label": "collapsed building",
+      "support": 6,
+      "precision": 0.714,
+      "recall": 0.833
+    },
+    {
+      "label": "blocked road",
+      "support": 8,
+      "precision": 0.875,
+      "recall": 0.875
+    },
+    {
+      "label": "fire or smoke",
+      "support": 5,
+      "precision": 1,
+      "recall": 1
+    },
+    {
+      "label": "landslide debris",
+      "support": 4,
+      "precision": 0.571,
+      "recall": 1
+    },
+    {
+      "label": "damaged bridge",
+      "support": 6,
+      "precision": 0.6,
+      "recall": 0.5
+    },
+    {
+      "label": "people waiting for rescue",
+      "support": 4,
+      "precision": 1,
+      "recall": 1
+    },
+    {
+      "label": "normal street",
+      "support": 9,
+      "precision": 1,
+      "recall": 0.778
+    }
+  ],
+  "confusion": [
+    {
+      "file": "flooded_street__239faf78.jpg",
+      "truth": "flooded street",
+      "predicted": "damaged bridge",
+      "score": 0.906
+    },
+    {
+      "file": "collapsed_building__6d71ae76.jpg",
+      "truth": "collapsed building",
+      "predicted": "damaged bridge",
+      "score": 0.664
+    },
+    {
+      "file": "blocked_road__cf1eb67a.jpg",
+      "truth": "blocked road",
+      "predicted": "landslide debris",
+      "score": 0.685
+    },
+    {
+      "file": "damaged_bridge__140c809f.jpg",
+      "truth": "damaged bridge",
+      "predicted": "landslide debris",
+      "score": 0.771
+    },
+    {
+      "file": "damaged_bridge__4f3e7273.jpg",
+      "truth": "damaged bridge",
+      "predicted": "blocked road",
+      "score": 0.493
+    },
+    {
+      "file": "damaged_bridge__7cf2b74c.jpg",
+      "truth": "damaged bridge",
+      "predicted": "landslide debris",
+      "score": 0.622
+    },
+    {
+      "file": "normal_street__44435742.jpg",
+      "truth": "normal street",
+      "predicted": "collapsed building",
+      "score": 0.508
+    },
+    {
+      "file": "normal_street__dbf71edd.jpg",
+      "truth": "normal street",
+      "predicted": "collapsed building",
+      "score": 0.619
+    }
+  ]
+}
