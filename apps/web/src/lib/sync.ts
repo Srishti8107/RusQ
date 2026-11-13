@@ -8,6 +8,7 @@
  * Status rules (§2.1): an item becomes `sent` while its request is in flight
  * and `received` ONLY when outbox.applyAck() verified the server's signature.
  */
+import { apiUrl } from './platform.ts';
 import { backoffMs, type Ack, type SyncResponse } from '@rusq/shared';
 import { api, ApiError, friendlyError, NO_CONNECTION } from './api.ts';
 import { onReachChange, probe } from './connectivity.ts';
@@ -123,7 +124,7 @@ async function doSync(reason: string): Promise<SyncResult> {
     res.attempted++;
     try {
       const s = await getSession();
-      const r = await fetch(`/api/photos/${p.id}`, {
+      const r = await fetch(apiUrl(`/photos/${p.id}`), {
         method: 'PUT',
         headers: { authorization: `Bearer ${s?.token}`, 'content-type': p.mime, 'x-report-id': p.reportId },
         body: p.bytes,
@@ -148,6 +149,14 @@ async function doSync(reason: string): Promise<SyncResult> {
   try {
     const { uploadProfileIfDirty } = await import('./profile.ts');
     await uploadProfileIfDirty();
+  } catch {
+    /* retried next round */
+  }
+
+  // Short codes other rescuers sent this phone by SMS / read out.
+  try {
+    const { uploadReceived } = await import('./shortcodes.ts');
+    res.received += await uploadReceived();
   } catch {
     /* retried next round */
   }

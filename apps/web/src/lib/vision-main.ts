@@ -6,6 +6,7 @@
  * off the UI thread: ONNX Runtime's `proxy` mode puts it in its own worker.
  * Same vision-core.ts, same models, same output contract.
  */
+import { modelOrigin } from './platform.ts';
 import type { VisionSuggestion } from '@rusq/shared';
 import { analyzeImage, mockAnalyze, type LoadedModels } from './vision-core.ts';
 import { configureTf, loadBrowserModels, meanColourOf } from './vision-env.ts';
@@ -36,8 +37,8 @@ function getModels(lowPower: boolean, progress?: (p: { status: string }) => void
     models = (async () => {
       installCanvasShim();
       const tf = await import('@huggingface/transformers');
-      configureTf(tf, location.origin, { lowPower, proxy: true });
-      return loadBrowserModels(tf, location.origin, true, progress);
+      configureTf(tf, location.origin, { lowPower, proxy: true, modelsOrigin: modelOrigin() });
+      return loadBrowserModels(tf, modelOrigin(), true, progress);
     })();
     models.catch(() => (models = null));
   }

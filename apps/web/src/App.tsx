@@ -15,12 +15,17 @@ import { SosPage } from './pages/Sos.tsx';
 import { ReportPage } from './pages/Report.tsx';
 import { SettingsPage } from './pages/Settings.tsx';
 import { Register } from './pages/Register.tsx';
+import { GetApp } from './pages/GetApp.tsx';
+import { fieldRoleBlockedOnWeb, useWebPolicy } from './lib/webpolicy.ts';
+import { isNativeApp } from './lib/platform.ts';
 import { Toasts } from './components/Toasts.tsx';
 import { ProfilePage } from './pages/Profile.tsx';
 import { MissingFamilyPage } from './pages/MissingFamily.tsx';
 
 // Heavier, less-used screens load on demand (still precached by the service worker,
 // so they open offline too). Keeps the first online visit fast on slow mobile data.
+const AdminAssignments = lazy(() => import('./pages/admin/Assignments.tsx').then((m) => ({ default: m.AdminAssignments })));
+const CodesPage = lazy(() => import('./pages/Codes.tsx').then((m) => ({ default: m.CodesPage })));
 const PeerLink = lazy(() => import('./pages/PeerLink.tsx').then((m) => ({ default: m.PeerLink })));
 const AdminReconcile = lazy(() => import('./pages/AdminReconcile.tsx').then((m) => ({ default: m.AdminReconcile })));
 const ShelterMapPage = lazy(() => import('./pages/ShelterMap.tsx').then((m) => ({ default: m.ShelterMapPage })));
@@ -47,6 +52,7 @@ const NAV: NavItem[] = [
   { to: '/', label: 'Home', icon: '🏠', roles: 'all' },
   { to: '/admin', label: 'Dashboard', icon: '📊', roles: ['admin'] },
   { to: '/admin/sos', label: 'SOS monitor', icon: '🚨', roles: ['admin'] },
+  { to: '/admin/assignments', label: 'Team assignments', icon: '📌', roles: ['admin'] },
   { to: '/admin/reports', label: 'Field reports', icon: '📋', roles: ['admin'] },
   { to: '/admin/decisions', label: 'Recommendations', icon: '🧭', roles: ['admin'] },
   { to: '/admin/reconcile', label: 'Allotments', icon: '⚖️', roles: ['admin'] },
@@ -58,6 +64,7 @@ const NAV: NavItem[] = [
   { to: '/missing', label: 'Missing person', icon: '🔎', roles: ['victim', 'rescuer'] },
   { to: '/profile', label: 'My profile', icon: '👤', roles: ['victim', 'rescuer'] },
   { to: '/nearby', label: 'Nearby phones', icon: '📶', roles: ['victim', 'rescuer'] },
+  { to: '/codes', label: 'Short codes (SMS)', icon: '📨', roles: ['rescuer', 'admin'] },
   // The control room is always online – no "Ready for offline" for admin (decisions.md 12.5).
   { to: '/setup', label: 'Ready for offline', icon: '✅', roles: ['victim', 'rescuer'] },
   { to: '/settings', label: 'Settings', icon: '⚙️', roles: 'all' },
@@ -75,6 +82,7 @@ export function App() {
   const navigate = useNavigate();
   const [updateReady, setUpdateReady] = useState(false);
   useEffect(() => onUpdateReady(setUpdateReady), []);
+  const policy = useWebPolicy();
 
   if (session === undefined) return <div className="main">Loading…</div>;
 
@@ -119,7 +127,7 @@ export function App() {
         </div>
       </header>
 
-      {session && !navBelow && nav}
+      {session && !navBelow && !fieldRoleBlockedOnWeb(role, policy) && nav}
 
       {updateReady && (
         <div className="banner info" style={{ margin: '8px 16px' }}>
@@ -135,8 +143,12 @@ export function App() {
         <Suspense fallback={<p>Loading…</p>}>
         <Routes>
           <Route path="/login" element={session ? <Navigate to="/" replace /> : <Login />} />
-          <Route path="/register" element={session ? <Navigate to="/" replace /> : <Register />} />
-          {!session ? (
+          <Route path="/register" element={session ? <Navigate to="/" replace /> : !isNativeApp && !(policy?.webFieldRoles ?? false) ? <GetApp policy={policy} /> : <Register />} />
+          <Route path="/app" element={<GetApp policy={policy} />} />
+          {session && fieldRoleBlockedOnWeb(role, policy) ? (
+            // website = control room only: field roles are sent to the Android app
+            <Route path="*" element={<GetApp policy={policy} signedInAs={session.user.username} onSignOut={async () => (await setSession(null), navigate('/login', { replace: true }))} />} />
+          ) : !session ? (
             <Route path="*" element={<Navigate to={`/login?next=${encodeURIComponent(loc.pathname + loc.search)}`} replace />} />
           ) : (
             <>
@@ -148,6 +160,7 @@ export function App() {
               <Route path="/missing" element={<MissingFamilyPage />} />
               <Route path="/admin" element={<Only roles={['admin']} role={role}><AdminDashboard /></Only>} />
               <Route path="/admin/sos" element={<Only roles={['admin']} role={role}><AdminSosMonitor /></Only>} />
+              <Route path="/admin/assignments" element={<Only roles={['admin']} role={role}><AdminAssignments /></Only>} />
               <Route path="/admin/reports" element={<Only roles={['admin']} role={role}><AdminReports /></Only>} />
               <Route path="/admin/decisions" element={<Only roles={['admin']} role={role}><AdminDecisions /></Only>} />
               <Route path="/admin/cctv" element={<Only roles={['admin']} role={role}><AdminCctv /></Only>} />
@@ -155,6 +168,7 @@ export function App() {
               <Route path="/admin/people" element={<Only roles={['admin']} role={role}><AdminPeople /></Only>} />
               <Route path="/outbox" element={<Navigate to="/" replace />} />
               <Route path="/nearby" element={<PeerLink />} />
+              <Route path="/codes" element={<Only roles={['rescuer', 'admin']} role={role}><CodesPage /></Only>} />
               <Route path="/admin/reconcile" element={role === 'admin' ? <AdminReconcile /> : <Navigate to="/" replace />} />
               <Route path="/setup" element={role === 'admin' ? <Navigate to="/admin" replace /> : <Setup />} />
               <Route path="/settings" element={<SettingsPage />} />
@@ -164,7 +178,7 @@ export function App() {
         </Routes>
         </Suspense>
       </main>
-      {session && navBelow && (
+      {session && navBelow && !fieldRoleBlockedOnWeb(role, policy) && (
         <div className="nav-below">
           <h2 className="nav-below-title">All options</h2>
           {nav}

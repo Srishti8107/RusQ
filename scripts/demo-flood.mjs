@@ -99,14 +99,14 @@ const sos = (u, lat, lng, minAgo, profile, src = 'live') => ({
 });
 
 console.log('SOS:');
-console.log('  sita  ', await sync(sita.token, [sos(sita, 27.6945, 85.3215, 20, { ...prof(sita), contacts: [{ name: 'Raju Gurung', phone: '+977 00000 00201', relation: 'son' }], age: 68, householdSize: 2, needs: ['elderly', 'medical'], medicalNotes: 'Type 2 diabetes – needs insulin' })]));
+console.log('  sita  ', await sync(sita.token, [sos(sita, 27.6912, 85.3192, 20, { ...prof(sita), contacts: [{ name: 'Raju Gurung', phone: '+977 00000 00201', relation: 'son' }], age: 68, householdSize: 2, needs: ['elderly', 'medical'], medicalNotes: 'Type 2 diabetes – needs insulin' })]));
 console.log('  laxmi ', await sync(laxmi.token, [sos(laxmi, 27.7022, 85.3261, 45, { ...prof(laxmi), contacts: [{ name: 'Prem Maharjan', phone: '+977 00000 00301' }], age: 74, householdSize: 2, needs: ['elderly', 'disability'] }, 'last_known')]));
 console.log('  rahim ', await sync(rahim.token, [sos(rahim, 27.7044, 85.3149, 15, { ...prof(rahim), contacts: [{ name: 'Salma Ansari', phone: '+977 00000 00302' }], age: 38, householdSize: 5, needs: ['child'], medicalNotes: 'Daughter has asthma' })]));
 console.log('  bijay ', await sync(bijay.token, [sos(bijay, null, null, 10, { ...prof(bijay), contacts: [{ name: 'Mina Thapa', phone: '+977 00000 00303' }], age: 22 })]));
 
 const snapshot = (await call('/snapshot', { token: sita.token })).body;
 const teams = [
-  { user: 'demo-ravi', lat: 27.6941, lng: 85.3212, victims: 30, urgency: 5, hazards: ['flooded street', 'people waiting for rescue'], req: { boats: 3, food_water: 150, rescue_equipment: 4 }, notes: 'Bagmati over the bank at Thapathali. Water at chest level, about 30 people on rooftops, 4 children. Fallen tree blocks the lane.', min: 25 },
+  { user: 'demo-ravi', lat: 27.6906, lng: 85.3186, victims: 30, urgency: 5, hazards: ['flooded street', 'people waiting for rescue'], req: { boats: 3, food_water: 150, rescue_equipment: 4 }, notes: 'Bagmati over the bank at Thapathali. Water at chest level, about 30 people on rooftops, 4 children. Fallen tree blocks the lane.', min: 25 },
   { user: 'demo-meena', lat: 27.704, lng: 85.3145, victims: 6, urgency: 4, hazards: ['collapsed building'], req: { medical_supplies: 10, first_aid_kits: 4, rescue_equipment: 2 }, notes: 'Part of a wall collapsed at the Tundikhel south gate. 2 injured, 1 trapped under debris.', min: 18 },
   { user: 'demo-kiran', lat: 27.7018, lng: 85.3251, victims: 18, urgency: 4, hazards: ['flooded street'], req: { boats: 2, food_water: 80, clothing_blankets: 30 }, notes: 'Babarmahal lane flooded, 18 people waiting on the community hall roof.', min: 12 },
 ];

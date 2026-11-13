@@ -47,7 +47,13 @@ export function summarise(frames: FrameResult[]) {
     }
     boats = Math.max(boats, f.s.boatCount?.estimate ?? 0);
   }
+  // Clip-level verdict: average every label's probability over all frames, so one odd frame
+  // (glare, a red bus, a sodium street light) cannot turn a flood clip into "fire".
+  const avg = new Map<string, number>();
+  for (const f of frames) for (const l of f.s.labels) avg.set(l.label, (avg.get(l.label) ?? 0) + l.score / frames.length);
+  const overall = [...avg.entries()].map(([label, score]) => ({ label, score })).sort((a, b) => b.score - a.score);
   return {
+    overall,
     hazards: [...hazards.entries()].map(([label, v]) => ({ label, share: frames.length ? v.frames / frames.length : 0, first: v.first, best: v.best })).sort((a, b) => b.share - a.share),
     peakPeople: people,
     peakPeopleConfidence: peopleConf,
@@ -156,6 +162,12 @@ export function FootageAnalyser() {
       {frames.length > 0 && (
         <div data-testid="footage-summary" data-frames={frames.length}>
           <h3>What the video shows (suggestion) – {name}</h3>
+          {sum.overall[0] && (
+            <p data-testid="footage-overall" data-label={sum.overall[0].label}>
+              Overall: <strong>{sum.overall[0].label}</strong> (average {Math.round(sum.overall[0].score * 100)} % over {frames.length} frames)
+              {sum.overall[1] && sum.overall[1].score > 0.15 ? `, then ${sum.overall[1].label} (${Math.round(sum.overall[1].score * 100)} %)` : ''}
+            </p>
+          )}
           <ul>
             {sum.hazards
               .filter((h) => h.label !== 'normal street')

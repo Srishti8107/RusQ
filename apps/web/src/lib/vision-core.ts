@@ -3,8 +3,10 @@
  * browser Web Worker and the Node evaluation script, so the evaluated code is
  * the shipped code.
  *
- * Hazard tagging : CLIP ViT-B/32 vision tower (q8) + precomputed text
- *                  embeddings of the fixed prompts → cosine × 100 → softmax.
+ * Hazard tagging : CLIP ViT-B/32 vision tower (q8) → TRAINED linear head (hazard-head.json,
+ *                  tests/vision-train/train.ts: reviewed flood / fire / … photos and video frames,
+ *                  CCTV-style variants) → softmax. Fallback when no head is given: zero-shot
+ *                  cosine against the precomputed text embeddings × 100.
  * Counting       : YOLOS-tiny (q8) COCO detector → people / boats, as an estimate.
  * Output is ADVISORY – it only pre-fills an editable suggestion.
  */
@@ -12,7 +14,7 @@ import { HAZARD_LABELS, hazardsFromLabels, type VisionSuggestion } from '@rusq/s
 
 export const CLIP_MODEL = 'Xenova/clip-vit-base-patch32';
 export const DETECT_MODEL = 'Xenova/yolos-tiny';
-export const VISION_VERSION = 'vision-1.0.0';
+export const VISION_VERSION = 'vision-2.0.0';
 export const MAX_ANALYSIS_EDGE = 4096;
 export const DETECT_EDGE = 640;
 
@@ -25,11 +27,23 @@ export interface TextEmbeds {
   embeds: { label: string; prompt: string; vector: number[] }[];
 }
 
+/** Trained linear head over the CLIP image embedding (one row of weights per hazard label). */
+export interface HazardHead {
+  version: string;
+  model: string;
+  labels: string[];
+  dim: number;
+  W: number[][];
+  b: number[];
+  trained?: Record<string, unknown>;
+}
+
 export interface LoadedModels {
   processor: Awaited<ReturnType<TF['AutoProcessor']['from_pretrained']>>;
   vision: Awaited<ReturnType<TF['CLIPVisionModelWithProjection']['from_pretrained']>>;
   detector: (image: unknown, opts: { threshold: number }) => Promise<{ label: string; score: number }[]>;
   text: TextEmbeds;
+  head?: HazardHead | null;
   backend: 'webgpu' | 'wasm';
   threads?: number;
 }
@@ -39,12 +53,14 @@ export async function loadModels(
   text: TextEmbeds,
   device: 'webgpu' | 'wasm' | 'cpu',
   progress?: (p: { file?: string; loaded?: number; total?: number; status: string }) => void,
+  head?: HazardHead | null,
 ): Promise<LoadedModels> {
   const opts = { dtype: 'q8' as const, device: device as 'webgpu', progress_callback: progress as never };
   const processor = await tf.AutoProcessor.from_pretrained(CLIP_MODEL);
   const vision = await tf.CLIPVisionModelWithProjection.from_pretrained(CLIP_MODEL, opts);
   const detector = (await tf.pipeline('object-detection', DETECT_MODEL, opts)) as unknown as LoadedModels['detector'];
-  return { processor, vision, detector, text, backend: device === 'webgpu' ? 'webgpu' : 'wasm', threads: tf.env.backends.onnx?.wasm?.numThreads };
+  const okHead = head && head.model === CLIP_MODEL && head.W.length === head.labels.length && head.W.every((r) => r.length === head.dim) ? head : null;
+  return { processor, vision, detector, text, head: okHead, backend: device === 'webgpu' ? 'webgpu' : 'wasm', threads: tf.env.backends.onnx?.wasm?.numThreads };
 }
 
 export async function analyzeImage(m: LoadedModels, image: { width: number; height: number }, now: () => number): Promise<VisionSuggestion> {
@@ -56,10 +72,14 @@ export async function analyzeImage(m: LoadedModels, image: { width: number; heig
   const out = (await (m.vision as unknown as (i: unknown) => Promise<{ image_embeds: { data: Float32Array } }>)(inputs)).image_embeds;
   const v = Array.from(out.data);
   const norm = Math.hypot(...v) || 1;
-  const logits = m.text.embeds.map((e) => m.text.logitScale * e.vector.reduce((s, x, i) => s + x * (v[i]! / norm), 0));
+  const u = v.map((x) => x / norm);
+  const names = m.head ? m.head.labels : m.text.embeds.map((e) => e.label);
+  const logits = m.head
+    ? m.head.W.map((w, k) => w.reduce((s, x, i) => s + x * u[i]!, m.head!.b[k]!))
+    : m.text.embeds.map((e) => m.text.logitScale * e.vector.reduce((s, x, i) => s + x * u[i]!, 0));
   const probs = softmax(logits);
-  const labels = m.text.embeds
-    .map((e, i) => ({ label: e.label, score: round3(probs[i]!) }))
+  const labels = names
+    .map((label, i) => ({ label, score: round3(probs[i]!) }))
     .filter((l) => (HAZARD_LABELS as readonly string[]).includes(l.label))
     .sort((a, b) => b.score - a.score);
 
@@ -85,7 +105,7 @@ export async function analyzeImage(m: LoadedModels, image: { width: number; heig
     personCount: { estimate: people.length, confidence: people.length ? mean(people) : round3(1 - (dets[0]?.score ?? 0) * 0.5) },
     boatCount: { estimate: boats.length, confidence: boats.length ? mean(boats) : 0.5 },
     hazards: hazardsFromLabels(labels),
-    model: `${CLIP_MODEL} (q8) + ${DETECT_MODEL} (q8)`,
+    model: `${CLIP_MODEL} (q8)${m.head ? ` + trained head ${m.head.version}` : ' zero-shot'} + ${DETECT_MODEL} (q8)`,
     version: VISION_VERSION,
     latencyMs: Math.round(now() - t0),
     backend: m.backend,

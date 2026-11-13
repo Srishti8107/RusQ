@@ -1,6 +1,6 @@
 /** SOS monitor (§4, §10.3): urgency level WITH its reasons, time, contacts, delivery path, and the control room's status actions. */
 import { useMemo, useState } from 'react';
-import { NEED_LABELS, type NeedFlag } from '@rusq/shared';
+import { kmText, NEED_LABELS, type NeedFlag } from '@rusq/shared';
 import { useCachedApi } from '../../lib/cache.ts';
 import { useNow, useReach } from '../../lib/hooks.ts';
 import { agoText } from '../../lib/location.ts';
@@ -26,6 +26,10 @@ interface MonitorSos {
   statusAt: string | null;
   delayMs: number;
   areaSeverity: string | null;
+  /** real background data of the person's ≈1 km area (WorldPop, terrain) */
+  areaContext?: { residents: number; residentsFloodProne: number; floodProneShare: number } | null;
+  /** nearest hospital in OpenStreetMap (sample region) */
+  nearestHospital?: { name: string; lat: number; lng: number; distanceM: number; floodProne?: boolean } | null;
   triage: { level: number; reasons: string[] };
   profile?: { name: string; contacts: { name: string; phone: string; relation?: string }[]; medicalNotes?: string; age?: number; phone?: string; householdSize?: number; needs?: string[] };
 }
@@ -40,7 +44,8 @@ export function AdminSosMonitor() {
     () =>
       (q.data?.sos ?? [])
         .filter((s) => filter === 'all' || (filter === 'active' ? s.status !== 'resolved' : s.status === filter))
-        .sort((a, b) => b.triage.level - a.triage.level || a.createdAt.localeCompare(b.createdAt)),
+        // newest alert first: the time it reached the control room (a delayed SOS that just arrived is new)
+        .sort((a, b) => b.receivedAt.localeCompare(a.receivedAt) || b.createdAt.localeCompare(a.createdAt) || b.triage.level - a.triage.level),
     [q.data, filter],
   );
 
@@ -56,7 +61,7 @@ export function AdminSosMonitor() {
           </button>
         ))}
       </div>
-      <p className="small muted">Sorted by urgency level (rule-based, reasons shown), then oldest first. The level is advisory – you decide.</p>
+      <p className="small muted">Newest SOS first (by the time it reached the control room). The number on each card is the urgency level (rule-based, reasons shown) – advisory, you decide.</p>
       {list.length === 0 && <p>No SOS in this list.</p>}
       {list.map((s) => (
         <SosCard key={s.id} s={s} teams={q.data!.teams} now={now} reload={q.reload} />
@@ -83,9 +88,15 @@ function SosCard({ s, teams, now, reload }: { s: MonitorSos; teams: { teamId: st
           </span>
           <div>
             <strong>{p?.name ?? 'Unknown person'}</strong> <span className="mono">{s.serverId}</span>
+            {now - Date.parse(s.receivedAt) < 10 * 60_000 && (
+              <span className="label-sim" style={{ marginLeft: 6 }} data-testid="sos-new">
+                NEW
+              </span>
+            )}
             <br />
             <span className="small">
-              Sent {agoText(s.createdAt, now)} · status <strong>{s.status}</strong>
+              Received {agoText(s.receivedAt, now)}
+              {Date.parse(s.receivedAt) - Date.parse(s.createdAt) > 60_000 && <> (sent {agoText(s.createdAt, now)})</>} · status <strong>{s.status}</strong>
               {s.assignedTeam ? ` → ${s.assignedTeam}` : ''}
             </span>
           </div>
@@ -97,6 +108,19 @@ function SosCard({ s, teams, now, reload }: { s: MonitorSos; teams: { teamId: st
           <li key={r}>{r}</li>
         ))}
       </ul>
+      {(s.nearestHospital || (s.areaContext && s.areaContext.floodProneShare >= 0.05)) && (
+        <p className="small" data-testid="sos-context">
+          {s.nearestHospital && (
+            <>
+              🏥 Nearest hospital: <strong>{s.nearestHospital.name}</strong> ({kmText(s.nearestHospital.distanceM)}, OpenStreetMap)
+              {s.nearestHospital.floodProne ? ' – itself on low-lying flood-prone land' : ''}.{' '}
+            </>
+          )}
+          {s.areaContext && s.areaContext.floodProneShare >= 0.05 && (
+            <>🌊 {Math.round(s.areaContext.floodProneShare * 100)} % of this area is low-lying land next to a river (terrain model).</>
+          )}
+        </p>
+      )}
       <p className="small">
         📍{' '}
         {s.lat !== null

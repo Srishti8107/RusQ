@@ -26,7 +26,7 @@ async function freePort(): Promise<number> {
   });
 }
 
-export async function startServer(): Promise<TestServer> {
+export async function startServer(extraEnv: Record<string, string> = {}): Promise<TestServer> {
   const port = await freePort();
   const dbPath = join(mkdtempSync(join(tmpdir(), 'rusq-e2e-')), 'rusq.db');
   let proc: ChildProcess | null = null;
@@ -44,7 +44,9 @@ export async function startServer(): Promise<TestServer> {
         NODE_ENV: 'test',
         RUSQ_RATE_LIMIT: '100000',
         RUSQ_LOGIN_RATE_LIMIT: '1000',
+        RUSQ_WEB_FIELD_ROLES: '1', // tests drive people needing help and rescuers in the browser
         RUSQ_TEST_USERS: '1', // fixture accounts asha / ravi / meena / kiran – never in a normal start
+        ...extraEnv,
       },
       stdio: ['ignore', 'ignore', 'pipe'],
     });

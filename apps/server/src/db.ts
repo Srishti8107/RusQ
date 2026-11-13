@@ -150,6 +150,19 @@ CREATE TABLE IF NOT EXISTS rec_decisions (
   rec TEXT NOT NULL,
   decided_at TEXT NOT NULL
 );
+
+-- Team assignments: the control room sends a team to a location with a priority (shared/assignment.ts).
+CREATE TABLE IF NOT EXISTS assignments (
+  id TEXT PRIMARY KEY,
+  server_id TEXT UNIQUE NOT NULL,
+  team_id TEXT NOT NULL,
+  data TEXT NOT NULL,
+  status TEXT NOT NULL,
+  priority TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS assignments_team ON assignments (team_id, status);
 `;
 
 /** Columns added after Phase 1 – added in place so an existing database keeps its data. */
@@ -166,6 +179,10 @@ const MIGRATIONS: { table: string; column: string; ddl: string }[] = [
   { table: 'reports', column: 'relay_gateway', ddl: 'ALTER TABLE reports ADD COLUMN relay_gateway TEXT' },
   { table: 'missing_reports', column: 'relay_hops', ddl: 'ALTER TABLE missing_reports ADD COLUMN relay_hops INTEGER' },
   { table: 'missing_reports', column: 'relay_gateway', ddl: 'ALTER TABLE missing_reports ADD COLUMN relay_gateway TEXT' },
+  // rescuer short codes (shared/shortcode.ts): report reference shared by the code and the full report,
+  // and when the code arrived (kept after the full report replaces it)
+  { table: 'reports', column: 'short_ref', ddl: 'ALTER TABLE reports ADD COLUMN short_ref TEXT' },
+  { table: 'reports', column: 'short_code_at', ddl: 'ALTER TABLE reports ADD COLUMN short_code_at TEXT' },
 ];
 
 export function openDb(path: string): Db {
@@ -176,6 +193,7 @@ export function openDb(path: string): Db {
     const cols = (db.prepare(`PRAGMA table_info(${m.table})`).all() as { name: string }[]).map((c) => c.name);
     if (!cols.includes(m.column)) db.exec(m.ddl);
   }
+  db.exec('CREATE INDEX IF NOT EXISTS reports_short_ref ON reports (team_id, short_ref)');
   return db;
 }
 

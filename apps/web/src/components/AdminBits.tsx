@@ -95,8 +95,13 @@ export function AuthImage({ id, alt }: { id: string; alt: string }) {
 }
 
 /** How a record reached the server: direct, or through how many phones and whose phone uploaded it (decisions.md 13.3). */
-export function relayText(r: { via: string; relayHops?: number | null; relayGateway?: string | null }): string {
-  if (r.via !== 'relay') return 'direct upload';
-  if (r.relayHops === null || r.relayHops === undefined) return 'phone-to-phone relay';
-  return `phone-to-phone relay – ${r.relayHops} hop${r.relayHops === 1 ? '' : 's'} between phones, uploaded by ${r.relayGateway ?? 'a nearby phone'}`;
+export function relayText(r: { via: string; relayHops?: number | null; relayGateway?: string | null; shortCodeAt?: string | null }): string {
+  if (r.via === 'code') {
+    const hops = r.relayHops ?? 0;
+    return `short code only (SMS / read out) – passed on ${hops} time${hops === 1 ? '' : 's'}, entered by ${r.relayGateway ?? 'a rescuer'}; the full report (notes, photos, exact location) has not arrived yet`;
+  }
+  const first = r.shortCodeAt ? ' (its short code arrived first)' : '';
+  if (r.via !== 'relay') return `direct upload${first}`;
+  if (r.relayHops === null || r.relayHops === undefined) return `phone-to-phone relay${first}`;
+  return `phone-to-phone relay – ${r.relayHops} hop${r.relayHops === 1 ? '' : 's'} between phones, uploaded by ${r.relayGateway ?? 'a nearby phone'}${first}`;
 }

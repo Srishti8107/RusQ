@@ -12,14 +12,16 @@ import { CLIP_MODEL, DETECT_MODEL, analyzeImage, mockAnalyze, type LoadedModels 
 import { configureTf, loadBrowserModels, meanColourOf } from '../lib/vision-env.ts';
 
 type Req =
-  | { id: number; type: 'load'; preferGpu: boolean; lowPower?: boolean }
-  | { id: number; type: 'analyze'; blob: Blob; mock: boolean; lowPower?: boolean }
+  | { id: number; type: 'load'; preferGpu: boolean; lowPower?: boolean; modelsOrigin?: string }
+  | { id: number; type: 'analyze'; blob: Blob; mock: boolean; lowPower?: boolean; modelsOrigin?: string }
   | { id: number; type: 'status' };
 
 let models: LoadedModels | null = null;
 let loading: Promise<LoadedModels> | null = null;
 let lastError: string | null = null;
 let lowPower = false;
+/** where /models/ is served (the control-room server inside the Android app) */
+let modelsOrigin = '';
 
 const post = (m: unknown) => (self as unknown as DedicatedWorkerGlobalScope).postMessage(m);
 
@@ -28,8 +30,8 @@ async function load(preferGpu: boolean, id: number): Promise<LoadedModels> {
   if (loading) return loading;
   loading = (async () => {
     const tf = await import('@huggingface/transformers');
-    configureTf(tf, self.location.origin, { lowPower, proxy: false });
-    return loadBrowserModels(tf, self.location.origin, preferGpu, (p) => post({ id, type: 'progress', ...p }));
+    configureTf(tf, self.location.origin, { lowPower, proxy: false, modelsOrigin });
+    return loadBrowserModels(tf, modelsOrigin || self.location.origin, preferGpu, (p) => post({ id, type: 'progress', ...p }));
   })();
   try {
     models = await loading;
@@ -54,6 +56,7 @@ async function meanColour(blob: Blob): Promise<[number, number, number]> {
 self.onmessage = async (e: MessageEvent<Req>) => {
   const req = e.data;
   if ('lowPower' in req && req.lowPower !== undefined) lowPower = req.lowPower;
+  if ('modelsOrigin' in req && req.modelsOrigin) modelsOrigin = req.modelsOrigin;
   try {
     if (req.type === 'status') {
       post({

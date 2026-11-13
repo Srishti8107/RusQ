@@ -13,23 +13,24 @@ import { toast } from './toast.ts';
 export const FEED_MS = 5000;
 
 export interface FeedItem {
-  kind: 'sos' | 'report' | 'missing';
+  kind: 'sos' | 'report' | 'missing' | 'assignment';
   id: string;
   serverId: string;
   receivedAt: string;
   title: string;
   detail: string;
-  relay: { hops: number | null; gateway: string | null } | null;
+  relay: { hops: number | null; gateway: string | null; shortCode?: boolean } | null;
 }
 
 let since: string | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 
-const LINK = { sos: { to: '/admin/sos', label: 'Open SOS monitor' }, report: { to: '/admin/reports', label: 'Open field reports' }, missing: { to: '/admin/missing', label: 'Open missing persons' } };
-const ICON = { sos: '🆘', report: '📝', missing: '🔎' };
+const LINK = { sos: { to: '/admin/sos', label: 'Open SOS monitor' }, report: { to: '/admin/reports', label: 'Open field reports' }, missing: { to: '/admin/missing', label: 'Open missing persons' }, assignment: { to: '/admin/assignments', label: 'Open team assignments' } };
+const ICON = { sos: '🆘', report: '📝', missing: '🔎', assignment: '📌' };
 
 function relayLine(r: FeedItem['relay']): string {
   if (!r) return '';
+  if (r.shortCode) return ` · came as a SHORT CODE (SMS / read out), passed on ${r.hops ?? 0} time${r.hops === 1 ? '' : 's'}, entered by ${r.gateway ?? 'a rescuer'}`;
   return r.hops !== null ? ` · came through ${r.hops} phone hop${r.hops === 1 ? '' : 's'}, uploaded by ${r.gateway ?? 'a nearby phone'}` : ' · came through nearby phones';
 }
 
@@ -37,7 +38,7 @@ export function showFeedItem(it: FeedItem) {
   const what = it.kind === 'sos' ? it.title : it.title.charAt(0).toLowerCase() + it.title.slice(1);
   toast({
     kind: it.kind === 'sos' ? 'sos' : 'info',
-    title: `${ICON[it.kind]} New ${what} (${it.serverId})`,
+    title: it.kind === 'assignment' ? `${ICON[it.kind]} ${it.title} (${it.serverId})` : `${ICON[it.kind]} New ${what} (${it.serverId})`,
     body: `${it.detail}${relayLine(it.relay)}`,
     link: LINK[it.kind],
     ms: it.kind === 'sos' ? 0 : 15_000,
@@ -45,7 +46,7 @@ export function showFeedItem(it: FeedItem) {
   });
   try {
     if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.visibilityState === 'hidden') {
-      new Notification(`${ICON[it.kind]} New ${what}`, { body: it.detail, tag: it.id, requireInteraction: it.kind === 'sos' });
+      new Notification(it.kind === 'assignment' ? `${ICON[it.kind]} ${it.title}` : `${ICON[it.kind]} New ${what}`, { body: it.detail, tag: it.id, requireInteraction: it.kind === 'sos' });
     }
   } catch {
     /* notifications not available */

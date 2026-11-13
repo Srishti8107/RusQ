@@ -6,11 +6,13 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
 import compress from '@fastify/compress';
 import fastifyStatic from '@fastify/static';
-import { existsSync } from 'node:fs';
+import { createReadStream, existsSync, statSync } from 'node:fs';
+import { timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import {
   allocate,
   AllocationInputError,
+  extractShortCodes,
   ResourceQtySchema,
   Site,
   SyncRequest,
@@ -25,6 +27,7 @@ import { hashPassword, requireRole, signToken, verifyPassword } from './auth.ts'
 import { seedDemo, seedPhase2, seedTestUsers } from './seed.ts';
 import { registerPhase2Routes } from './routes-phase2.ts';
 import { registerPeerRoutes } from './routes-peer.ts';
+import { registerAssignmentRoutes } from './assignment-service.ts';
 
 export interface AppOptions {
   dbPath?: string;
@@ -41,6 +44,18 @@ export interface AppOptions {
   /** requests per minute per IP (global); tests can lower/raise it */
   rateLimitMax?: number;
   now?: () => Date;
+  /**
+   * Shared secret for POST /api/sms/inbound (an SMS-gateway phone or provider forwards rescuer
+   * short codes). Unset = the endpoint is off (404). Env: RUSQ_SMS_SECRET.
+   */
+  smsSecret?: string;
+  /**
+   * Let people needing help and rescuers use the WEBSITE too (default: only the control room;
+   * field roles use the Android app). Env RUSQ_WEB_FIELD_ROLES=1. Useful for iPhones and tests.
+   */
+  webFieldRoles?: boolean;
+  /** Android app file offered at /rusq.apk (env RUSQ_APK). */
+  apkPath?: string;
 }
 
 export async function buildApp(opts: AppOptions = {}): Promise<{ app: FastifyInstance; services: Services }> {
@@ -57,6 +72,24 @@ export async function buildApp(opts: AppOptions = {}): Promise<{ app: FastifyIns
 
   // Brotli/gzip for text assets – first install over slow mobile data matters most.
   await app.register(compress, { global: true, threshold: 1024, encodings: ['br', 'gzip'] });
+  // The Android app (Capacitor) runs its pages from https://localhost and calls this server by URL.
+  const appOrigins = ['https://localhost', 'capacitor://localhost', ...(process.env.RUSQ_APP_ORIGINS ?? '').split(',').map((x) => x.trim()).filter(Boolean)];
+  // CORS only for /api and /models and only for the app's origins. NOT a global plugin: a global "Vary: Origin" on the
+  // static model files made the offline cache miss them (photo helper failed offline – found by the flood E2E test).
+  app.addHook('onRequest', async (req, reply) => {
+    const origin = req.headers.origin;
+    // /models/: the Android app downloads the photo-helper models from here (they are not inside the APK)
+    if (!origin || !(req.url.startsWith('/api/') || req.url.startsWith('/models/')) || !appOrigins.includes(origin)) return;
+    reply.header('access-control-allow-origin', origin).header('vary', 'Origin').header('access-control-expose-headers', 'content-range, content-length');
+    if (req.method === 'OPTIONS') {
+      return reply
+        .header('access-control-allow-methods', 'GET, POST, PUT')
+        .header('access-control-allow-headers', 'authorization, content-type, x-report-id, range')
+        .header('access-control-max-age', '86400')
+        .code(204)
+        .send();
+    }
+  });
 
   await app.register(rateLimit, {
     global: true,
@@ -90,6 +123,19 @@ export async function buildApp(opts: AppOptions = {}): Promise<{ app: FastifyIns
 
   // Reachability probe used by the client's "real offline detection" (§5).
   app.get('/api/health', async () => ({ ok: true, time: new Date().toISOString() }));
+
+  const webFieldRoles = opts.webFieldRoles ?? process.env.RUSQ_WEB_FIELD_ROLES === '1';
+  const apkPath = opts.apkPath ?? process.env.RUSQ_APK ?? 'apps/server/data/rusq.apk';
+  /** Public: what the website offers (control room only, or field roles too) and whether the app can be downloaded here. */
+  app.get('/api/config', async () => ({ webFieldRoles, apk: existsSync(apkPath) ? '/rusq.apk' : null }));
+  app.get('/rusq.apk', async (_req, reply) => {
+    if (!existsSync(apkPath)) return reply.code(404).send({ error: 'the Android app is not available on this server yet' });
+    return reply
+      .header('content-type', 'application/vnd.android.package-archive')
+      .header('content-disposition', 'attachment; filename="rusq.apk"')
+      .header('content-length', statSync(apkPath).size)
+      .send(createReadStream(apkPath));
+  });
 
   app.get('/api/server-key', async () => ({ ackPublicJwk: keys.ackPublicJwk }));
 
@@ -173,6 +219,39 @@ export async function buildApp(opts: AppOptions = {}): Promise<{ app: FastifyIns
   app.post('/api/mesh/upload', { preHandler: any, config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (req) => {
     const body = z.object({ envelopes: z.array(z.unknown()).min(1).max(200) }).parse(req.body);
     return services.ingestEnvelopes(body.envelopes, req.user!.sub);
+  });
+
+  /* --------------------------- rescuer short codes --------------------------- */
+
+  const fieldStaff = requireRole(keys.tokenSecret, 'rescuer', 'admin');
+  async function ingestCodesIn(text: string, actor: string) {
+    const found = extractShortCodes(text);
+    const codes = found.length ? found : [text.trim()];
+    const results = [];
+    for (const code of codes.slice(0, 20)) results.push({ code, ...(await services.ingestCode(code, actor)) });
+    return results;
+  }
+
+  /** A rescuer or the control room types / pastes codes (e.g. from an SMS or a phone call). */
+  app.post('/api/codes', { preHandler: fieldStaff, config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (req) => {
+    const { text } = z.object({ text: z.string().min(1).max(4000) }).parse(req.body);
+    return { results: await ingestCodesIn(text, req.user!.sub) };
+  });
+
+  /**
+   * SMS gateway webhook: an Android phone with a SIM (SMS-forwarding app) or an SMS provider
+   * posts every incoming text here. Off unless a secret is configured.
+   */
+  app.post('/api/sms/inbound', { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (req, reply) => {
+    const secret = opts.smsSecret ?? process.env.RUSQ_SMS_SECRET;
+    if (!secret) return reply.code(404).send({ error: 'not found' });
+    const given = String(req.headers['x-rusq-sms-secret'] ?? (req.query as { secret?: string })?.secret ?? '');
+    if (!safeEqual(given, secret)) return reply.code(401).send({ error: 'bad secret' });
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const text = [b.text, b.message, b.body, b.content].find((x) => typeof x === 'string') as string | undefined;
+    if (!text) throw new HttpError(400, 'text required');
+    const from = typeof b.from === 'string' ? b.from.slice(0, 32) : '';
+    return { results: await ingestCodesIn(text.slice(0, 4000), `SMS gateway${from ? ` (from ${from})` : ''}`) };
   });
 
   app.addContentTypeParser(['image/jpeg', 'image/webp', 'image/png'], { parseAs: 'buffer', bodyLimit: 8 * 1024 * 1024 }, (_req, body, done) =>
@@ -266,6 +345,7 @@ export async function buildApp(opts: AppOptions = {}): Promise<{ app: FastifyIns
 
   await registerPhase2Routes(app, services, keys, { registerRateLimitMax: opts.registerRateLimitMax });
   await registerPeerRoutes(app, keys);
+  await registerAssignmentRoutes(app, services, keys);
 
   /* ------------------------- static web app --------------------------- */
 
@@ -283,6 +363,12 @@ export async function buildApp(opts: AppOptions = {}): Promise<{ app: FastifyIns
   }
 
   return { app, services };
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
 }
 
 function looksLikeImage(b: Buffer): boolean {

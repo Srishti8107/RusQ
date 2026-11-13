@@ -8,7 +8,7 @@
  * also shows the same information as a list, so nothing is lost.
  */
 import { useEffect, useRef, useState } from 'react';
-import maplibregl, { type GeoJSONSourceSpecification, type LayerSpecification, type StyleSpecification } from 'maplibre-gl';
+import maplibregl, { type GeoJSONSourceSpecification, ImageSourceSpecification, type LayerSpecification, type StyleSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { PMTiles, Protocol, type RangeResponse, type Source } from 'pmtiles';
 import type { GeoJSON as GeoJSONData } from 'geojson';
@@ -70,13 +70,13 @@ export interface MapMarker {
   lng: number;
   /** short visible text on the marker */
   label: string;
-  kind: 'shelter' | 'me' | 'me-old' | 'sos' | 'report' | 'cctv';
+  kind: 'shelter' | 'me' | 'me-old' | 'sos' | 'report' | 'cctv' | 'task' | 'pick' | 'hospital';
   title: string;
   onClick?: () => void;
 }
 
 export interface MapLayers {
-  sources: Record<string, GeoJSONSourceSpecification>;
+  sources: Record<string, GeoJSONSourceSpecification | ImageSourceSpecification>;
   layers: LayerSpecification[];
   /** layer id → builds the popup text for a clicked feature */
   popups?: Record<string, (props: Record<string, unknown>) => string>;
@@ -92,6 +92,7 @@ export function MapView({
   focus,
   fitMarkers = false,
   offlineHint = true,
+  onPick,
 }: {
   markers?: MapMarker[];
   overlay?: MapLayers;
@@ -104,8 +105,12 @@ export function MapView({
   fitMarkers?: boolean;
   /** show the "save it for offline" hint (not for the always-online control room) */
   offlineHint?: boolean;
+  /** a tap on the map (not on a marker) picks that point – control room: choose a location */
+  onPick?: (p: { lat: number; lng: number }) => void;
 }) {
   const fitted = useRef(false);
+  const pickRef = useRef(onPick);
+  pickRef.current = onPick;
   const el = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const domMarkers = useRef<maplibregl.Marker[]>([]);
@@ -148,6 +153,7 @@ export function MapView({
             }
           });
           m.on('error', (e) => console.warn('map', e.error?.message));
+          m.on('click', (e) => pickRef.current?.({ lat: Math.round(e.lngLat.lat * 1e5) / 1e5, lng: Math.round(e.lngLat.lng * 1e5) / 1e5 }));
           // How many base-map features are on screen (tests + a cheap "the map really drew" signal).
           m.on('idle', () => {
             try {
@@ -202,8 +208,8 @@ export function MapView({
     for (const l of overlay.layers) if (m.getLayer(l.id)) m.removeLayer(l.id);
     for (const [id, src] of Object.entries(overlay.sources)) {
       const existing = m.getSource(id) as maplibregl.GeoJSONSource | undefined;
-      if (existing) existing.setData(src.data as GeoJSONData);
-      else m.addSource(id, src);
+      if (existing && src.type === 'geojson') existing.setData(src.data as GeoJSONData);
+      else if (!existing) m.addSource(id, src);
     }
     for (const l of overlay.layers) m.addLayer(l);
     const handlers: [string, (e: maplibregl.MapLayerMouseEvent) => void][] = [];

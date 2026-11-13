@@ -57,6 +57,22 @@ export interface DsTeam {
   lng: number | null;
 }
 
+/**
+ * Real background data for one ≈1 km area (server: Nepal sample region – WorldPop 2024 residents and
+ * terrain flood susceptibility from the Copernicus DEM + OpenStreetMap rivers). Context only:
+ * residents are NOT people needing help, and susceptibility is NOT an observed flood.
+ */
+export interface AreaContext {
+  /** estimated residents (WorldPop 2024) */
+  residents: number;
+  /** estimated residents on HIGH flood-prone land (≤ 3 m above the nearest river, ≤ 600 m from it) */
+  residentsFloodProne: number;
+  /** share of the area that is HIGH flood-prone land, 0..1 */
+  floodProneShare: number;
+  /** share of the area that is MODERATE flood-prone land (≤ 6 m), 0..1 */
+  moderateShare: number;
+}
+
 export interface DecisionInput {
   now: string;
   sos: DsSos[];
@@ -68,6 +84,8 @@ export interface DecisionInput {
   snapshotVersion: number;
   /** minutes an open SOS may wait without a field report nearby before it is "unattended" */
   unattendedMinutes?: number;
+  /** optional real background data per area (cellId → context) */
+  areaContext?: Record<string, AreaContext>;
 }
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low';
@@ -104,6 +122,8 @@ export interface CellSummary {
   reasons: string[];
   nearestShelter: { id: string; name: string; distanceM: number } | null;
   evidence: { sos: string[]; reports: string[]; cctv: string[] };
+  /** real background data for this area, if known (never counted as people needing help) */
+  context?: AreaContext;
 }
 
 export interface Recommendation {
@@ -210,6 +230,13 @@ export function summariseCells(input: DecisionInput): CellSummary[] {
       [c.blocked ? 10 : 0, 'road blocked / bridge damaged +10'],
       [10 * c.unattendedSos, `${c.unattendedSos} SOS waiting ≥ ${unattendedMin} min with no field report nearby × 10`],
     ];
+    const ctx = input.areaContext?.[c.cellId];
+    if (ctx) {
+      c.context = ctx;
+      // Terrain: low-lying land next to a river floods first. Small, labelled bump – never a substitute for reports.
+      if (ctx.floodProneShare >= 0.05)
+        parts.push([5, `${Math.round(ctx.floodProneShare * 100)} % of this area is low-lying land next to a river (≤ 3 m above it – terrain model), about ${ctx.residentsFloodProne} residents there +5`]);
+    }
     c.score = parts.reduce((s, [v]) => s + v, 0);
     c.severity = severityOf(c.score);
     c.reasons = parts.filter(([v]) => v > 0).map(([v, t]) => `${t} = ${v}`);

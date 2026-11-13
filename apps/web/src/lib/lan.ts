@@ -15,6 +15,9 @@
  *   {t:'summary', seen:[...ids], pull}  anti-entropy ("this is what I have"); pull=true asks
  *                                  the peer to answer with its own summary so we can push
  *   {t:'msg', m: MeshMessage}      a relay envelope
+ *
+ * The same protocol also runs over the Android app's Bluetooth / Wi-Fi Direct link (nearby.ts,
+ * Google Nearby Connections): such peers have no RTCPeerConnection, they send through `sendRaw`.
  */
 import type { MeshMessage, MeshSummary } from '@rusq/shared';
 import { getRelayNode, onRelayChange } from './relay.ts';
@@ -32,11 +35,13 @@ export interface Peer {
   remoteName?: string | null;
   /** set for automatic links: the node we expect at the other end */
   expectedNodeId?: string;
-  /** automatic or code */
-  how: 'auto' | 'code';
+  /** automatic (server-introduced WebRTC), code (copy-paste WebRTC) or nearby (Android app: Bluetooth / Wi-Fi Direct) */
+  how: 'auto' | 'code' | 'nearby';
   createdAt: number;
-  pc: RTCPeerConnection;
+  pc: RTCPeerConnection | null;
   dc: RTCDataChannel | null;
+  /** non-WebRTC transports (nearby.ts) */
+  sendRaw?: (text: string) => void;
   state: 'connecting' | 'open' | 'closed';
   sent: number;
   received: number;
@@ -115,7 +120,7 @@ export function forgetPeer(id: string) {
   const p = peers.get(id);
   if (!p) return;
   try {
-    p.pc.close();
+    p.pc?.close();
   } catch {
     /* already closed */
   }
@@ -150,14 +155,14 @@ export async function acceptInvite(code: string): Promise<{ peer: Peer; reply: s
 export async function completeInvite(peer: Peer, replyCode: string) {
   const answer = await decodeSignal(replyCode);
   if (answer.type !== 'answer') throw new Error('That is an invitation code, not a reply code.');
-  await peer.pc.setRemoteDescription(answer);
+  await peer.pc!.setRemoteDescription(answer);
 }
 
 export function closePeer(id: string) {
   const p = peers.get(id);
   if (!p) return;
   p.dc?.close();
-  p.pc.close();
+  p.pc?.close();
   p.state = 'closed';
   peers.delete(id);
   notify();
@@ -195,7 +200,39 @@ function attachChannel(peer: Peer, dc: RTCDataChannel) {
 }
 
 function send(peer: Peer, obj: unknown) {
-  if (peer.dc?.readyState === 'open') peer.dc.send(JSON.stringify(obj));
+  if (peer.sendRaw) {
+    if (peer.state === 'open') peer.sendRaw(JSON.stringify(obj));
+  } else if (peer.dc?.readyState === 'open') peer.dc.send(JSON.stringify(obj));
+}
+
+/* ------------------- other transports (Android app: nearby.ts) ------------------- */
+
+/** A link made by another transport: register it, then say hello and exchange summaries. */
+export async function openExternalPeer(id: string, how: Peer['how'], sendRaw: (text: string) => void): Promise<Peer> {
+  const old = peers.get(id);
+  if (old && old.state === 'open') return old;
+  const peer: Peer = { id, remoteNodeId: null, how, createdAt: Date.now(), pc: null, dc: null, sendRaw, state: 'open', sent: 0, received: 0 };
+  peers.set(id, peer);
+  notify();
+  const n = await getRelayNode();
+  const s = await getSession();
+  send(peer, { t: 'hello', nodeId: n?.id ?? 'unprovisioned', user: s?.user.username ?? null, name: s?.user.name ?? null });
+  await sendSummary(peer);
+  return peer;
+}
+
+/** One complete protocol message received over another transport. */
+export function externalMessage(id: string, text: string) {
+  const p = peers.get(id);
+  if (p) void onMessage(p, text);
+}
+
+export function closeExternalPeer(id: string) {
+  const p = peers.get(id);
+  if (!p) return;
+  p.state = 'closed';
+  peers.delete(id);
+  notify();
 }
 
 async function sendSummary(peer: Peer, pull = true) {

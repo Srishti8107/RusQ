@@ -8,7 +8,7 @@
  *   - learnAcks(): acks from direct sync are wrapped and relayed to peers
  * Verified acks that arrive over the mesh update the outbox (→ received).
  */
-import { MeshNode, splitPhoto, toBase64, uuidv7, type Ack, type MeshMessage, type MeshNodeState } from '@rusq/shared';
+import { MeshNode, splitPhoto, toBase64, uuidv7, verifyAck, type Ack, type MeshMessage, type MeshNodeState } from '@rusq/shared';
 import { api } from './api.ts';
 import { db, kvGet, kvSet, K, type OutboxRow, type PhotoRow } from './db.ts';
 import { getAckPublicKey, getTeamKey } from './keys.ts';
@@ -44,6 +44,10 @@ export function getRelayNode(): Promise<MeshNode | null> {
         newId: () => uuidv7(),
         onAck: async (ack) => {
           await applyAck(ack); // re-verifies with the cached key before marking received
+          if (await verifyAckCached(ack)) {
+            const { markCodeAcked } = await import('./shortcodes.ts');
+            await markCodeAcked(ack); // a short code this phone carried reached the server through another phone
+          }
         },
         // Other phones' messages exist nowhere else on this phone: persist them right away
         // (photo-chunk bursts are debounced to spare the battery).
@@ -82,6 +86,11 @@ async function selfHeal(node: MeshNode) {
     healed++;
   }
   if (healed) await kvSet(K.meshState, node.exportState());
+}
+
+async function verifyAckCached(ack: Ack): Promise<boolean> {
+  const key = await getAckPublicKey();
+  return !!key && (await verifyAck(key, ack));
 }
 
 export function resetRelayNode() {

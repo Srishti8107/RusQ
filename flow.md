@@ -94,6 +94,11 @@ originate() ──sign MAC──▶ store ──messagesFor(peer.summary)──�
 | `POST /api/auth/register` (P2) | public, rate-limited | victim self-registration: `{ userId, profile }`, no password, always role victim |
 | `GET /api/admin/feed?since=` (13.4) | admin | new SOS / field reports / missing reports since a time (for the pop-ups) |
 | `PUT /api/photos/:id`, `GET /api/photos/:id` (13.1) | any role, checked | victims: only photos of their OWN missing-person report (after it arrived); missing-person photos visible to admin + that family only |
+| `GET /api/admin/nepal-context` (13.11) | admin | real Nepal background data for the sample region (residents, flood-prone image, rivers, hospitals, sources) + NDRRMA 2024 figures |
+| `GET/POST /api/admin/assignments`, `POST /api/admin/assignments/:id` (13.9) | admin | team assignments board (assignments, team workload, priority areas); create; change priority / team / status |
+| `POST /api/team/assignments/:id/status` (13.9) | rescuer (own team) | on our way / done + note |
+| `POST /api/codes` (13.7) | rescuer, admin | rescuer short codes typed or pasted (from an SMS / a call) → field report (`via = code`) |
+| `POST /api/sms/inbound` (13.7) | secret header `x-rusq-sms-secret` | SMS gateway forwards incoming texts with short codes; off unless `RUSQ_SMS_SECRET` is set |
 | `POST /api/peer/poll` (12.10) | any role | automatic nearby-phone pairing: phones on the same network + WebRTC offers/answers (memory only) |
 | `GET /api/me`, `PUT /api/me/profile`, `GET /api/me/sos`, `GET /api/me/missing` (P2) | any role | own profile; control-room status of own SOS; REDACTED own missing-person cases |
 | `GET /api/shelters`, `GET /api/announcements` (P2) | any role | shelter list for the offline map; verified + announced cases only |
@@ -128,6 +133,10 @@ originate() ──sign MAC──▶ store ──messagesFor(peer.summary)──�
 | `relay.ts` | the phone's real `MeshNode`: persisted state, self-heal from outbox, originate records/photos, `learnAcks`, `gatewayUpload` (others' messages only) | shared MeshNode, keys, outbox, db |
 | `lan.ts` | **EXPERIMENTAL** WebRTC link: invite/accept/complete (signalled automatically by autolink, or by a copy-paste code as fallback; no QR), host-only SDP, data-channel anti-entropy (`summary`/`pull`/`msg`), gossip to all peers; `hello` carries the user ID; **transfer alerts** "Connected to … and transferring …" / "Receiving from … hop N" / confirmation came back through … (13.3) | relay, outbox, toast, transferlog, session |
 | `toast.ts` (13.3/13.4) | pop-up message bus (`toast()`, `dismiss()`), max 3 on screen; SOS ones stay until closed | – |
+| `nearby.ts` (13.12) | Android app only: Google Nearby Connections link (native NearbyPlugin.java) running the lan.ts protocol; framing; status for Nearby phones | lan, relay, session, platform |
+| `platform.ts` (13.12) | website or Android app; API base URL (server address in the app) | – |
+| `webpolicy.ts` (13.12) | `GET /api/config`: website for control room only unless field roles are switched on | api, platform |
+| `shortcodes.ts` (13.7) | rescuer short codes: code for a saved report, SMS link, received codes (check, +1 hop, relay `code` message, upload via `/api/codes` in the sync loop) | shared, api, keys, relay |
 | `transferlog.ts` (13.3) | phone-to-phone transfer log (direction, other phone's user ID, hop), kept in kv | db |
 | `adminfeed.ts` (13.4) | admin only: every 5 s `GET /api/admin/feed?since=` → a pop-up per new SOS / report / missing report (+ optional desktop notification); tells open admin screens to refresh | api, connectivity, session, toast |
 | `autolink.ts` (12.10) | **automatic nearby-phone links**: every 4 s while online, check in at `/api/peer/poll`; offer to phones on the same network (smaller id offers), answer offers, retry dead links; links survive losing the server | api, connectivity, lan, relay, session |
@@ -174,6 +183,9 @@ originate() ──sign MAC──▶ store ──messagesFor(peer.summary)──�
 | `pages/Home.tsx` | victims/rescuers: SosPanel FIRST; then rescuer "Tasks for your team" and "Your reports" (status), big role-based actions, verified announcements |
 | `pages/Sos.tsx` | SosPanel on its own screen (also `/sos?source=shortcut`; on `?source=sos_entry` swaps in `sos.webmanifest` + SOS icon/title for the iOS home-screen entry) |
 | `pages/Report.tsx` | rescue report: location, people, urgency, photos + vision suggestion, hazards, resources + hints, live provisional share, save (report + photos + allotment) |
+| `pages/Report.tsx` → shared `suggestRelief()` (13.8) | ticked supplies get amounts from Indian relief norms (people × rate × days), with how and source shown; typed amounts are kept |
+| `pages/admin/Assignments.tsx` (13.9) | Team assignments: map (priority areas, assignments, tap to pick), new assignment form, team workload, assignment list with priority / team / status changes |
+| `pages/Codes.tsx` (13.7) | Short codes: paste / type received codes, their status, pass on by SMS, letter table |
 | `pages/PeerLink.tsx` | Nearby phones (EXPERIMENTAL): automatic connection status (phones by user ID), carried messages, **transfer log with hop numbers** (13.3), gateway upload, copy-paste code as fallback (no QR); plain notice if the browser has no WebRTC |
 | `pages/AdminReconcile.tsx` | live stock vs claims, conflicts, approve (may lower) / reject, audit log |
 | `pages/Settings.tsx` | low power, stale threshold, MOCK vision switch, OPTIONAL AI writing helper (off by default) |

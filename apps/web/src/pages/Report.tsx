@@ -16,6 +16,8 @@ import {
   RESOURCE_KEYS,
   RESOURCES,
   resourceHints,
+  suggestRelief,
+  type RateLine,
   uuidv7,
   type FieldReport,
   type HazardLabel,
@@ -34,6 +36,7 @@ import { friendlyError } from '../lib/api.ts';
 import { PhotoError, processPhoto, type ProcessedPhoto } from '../lib/photos.ts';
 import { getDeviceId, getSettings } from '../lib/session.ts';
 import { analyzePhoto } from '../lib/vision.ts';
+import { codeFor, smsHref } from '../lib/shortcodes.ts';
 
 const URGENCY_WORDS = ['', 'Low', 'Moderate', 'Serious', 'Severe', 'Critical'];
 
@@ -54,6 +57,10 @@ export function ReportPage() {
   const [hazards, setHazards] = useState<Set<HazardLabel>>(new Set());
   const [suggestedHazards, setSuggestedHazards] = useState<Set<HazardLabel>>(new Set());
   const [requested, setRequested] = useState<ResourceQty>({});
+  /** days of supply to ask for (food and water) */
+  const [days, setDays] = useState(1);
+  /** resources whose amount the rescuer typed: the norms no longer change them */
+  const [manual, setManual] = useState<Set<ResourceKey>>(new Set());
   const [photos, setPhotos] = useState<PhotoDraft[]>([]);
   const [keepLocation, setKeepLocation] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
@@ -64,6 +71,9 @@ export function ReportPage() {
   const [deviceId, setDeviceId] = useState('');
   const [reportId] = useState(() => uuidv7());
   const [saved, setSaved] = useState(false);
+  const [shortCode, setShortCode] = useState<string | null>(null);
+  const [smsNumbers, setSmsNumbers] = useState('');
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const row = useLive(() => (saved ? db.outbox.get(reportId) : Promise.resolve(undefined)), [saved, reportId], undefined);
 
@@ -72,6 +82,7 @@ export function ReportPage() {
     void getSettings().then((s) => {
       setLowPower(s.lowPower);
       setMock(s.visionMock);
+      setSmsNumbers(s.smsNumbers);
     });
     void snapshotStatus().then(async (s) => {
       setSnap(s);
@@ -115,6 +126,37 @@ export function ReportPage() {
 
   const aiSuggestion = useMemo(() => mergeSuggestions(photos.map((p) => p.vision.result).filter(Boolean) as VisionSuggestion[]), [photos]);
   const hints = resourceHints([...hazards]);
+
+  /* --------------- amounts from Indian government relief norms --------------- */
+
+  const relief = useMemo(() => suggestRelief(victims, days, requested.boats ?? 0), [victims, days, requested.boats]);
+  // Ticked rows follow the people count (also the photo estimate) until the rescuer types an amount.
+  useEffect(() => {
+    setRequested((r) => {
+      let changed = false;
+      const n = { ...r };
+      for (const k of RESOURCE_KEYS) {
+        const line = relief.lines[k];
+        if ((r[k] ?? 0) > 0 && !manual.has(k) && line && line.qty > 0 && line.qty !== r[k]) {
+          n[k] = line.qty;
+          changed = true;
+        }
+      }
+      return changed ? n : r;
+    });
+  }, [relief, manual]);
+
+  function setResource(k: ResourceKey, v: number, how: 'tick' | 'untick' | 'typed') {
+    if (how === 'typed') setManual((m) => new Set(m).add(k));
+    else
+      setManual((m) => {
+        const n = new Set(m);
+        n.delete(k);
+        return n;
+      });
+    const line = relief.lines[k];
+    setRequested((r) => ({ ...r, [k]: how === 'tick' ? (line && line.qty > 0 ? line.qty : Math.max(1, v)) : v }));
+  }
 
   /* ------------------------ provisional allotment ------------------------ */
 
@@ -163,6 +205,7 @@ export function ReportPage() {
         await queuePhoto({ id: p.id, reportId, createdAt: report.createdAt, mime: 'image/jpeg', bytes: await p.blob.arrayBuffer(), thumbBytes: await p.thumb.arrayBuffer(), width: p.width, height: p.height, location: keepLocation ? { lat: loc.fix.lat, lng: loc.fix.lng } : null });
       }
       await queueReport(report);
+      setShortCode(await codeFor(report).catch(() => null));
       if (snap?.snap && Object.keys(req).length > 0) {
         const { allotment } = computeProvisionalAllotment({ snapshot: snap.snap, report, deviceId, alreadyAllotted: already, id: uuidv7(), createdAt: new Date().toISOString() });
         await queueAllotment(allotment);
@@ -188,6 +231,28 @@ export function ReportPage() {
         <h1>Report saved</h1>
         <StatusBadge s={row} long />
         <p>It is sent automatically as soon as there is a connection (also through nearby phones). Its status is on Home.</p>
+        {row.status !== 'received' && shortCode && (
+          <div className="card" data-testid="report-shortcode" style={{ margin: '12px 0' }}>
+            <h2>No internet? Send it as a short code</h2>
+            <p className="small">One SMS with the people count and what is needed. It works with a weak (2G) signal. The full report with photos still follows when there is internet.</p>
+            <code className="shortcode" data-testid="shortcode-text">{shortCode}</code>
+            <div className="row" style={{ marginTop: 8 }}>
+              {smsNumbers ? (
+                <a className="btn" href={smsHref(smsNumbers, shortCode)} data-testid="shortcode-sms">
+                  📨 Send by SMS
+                </a>
+              ) : (
+                <Link className="btn secondary" to="/settings">
+                  Add SMS numbers in Settings
+                </Link>
+              )}
+              <button className="btn secondary" onClick={() => void navigator.clipboard?.writeText(shortCode).then(() => setCopied(true))}>
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            <p className="small muted">No signal at all? Read the code out on any phone call or radio – the other person types it on “Short codes”.</p>
+          </div>
+        )}
         <div className="row">
           <Link className="btn" to="/report" reloadDocument>
             New report
@@ -343,9 +408,41 @@ export function ReportPage() {
             <span className="label-advisory">HINT</span> Often needed for {[...new Set(hints.map((h) => h.from))].join(', ')}: {hints.map((h) => h.note).join(', ')}. Not ticked for you.
           </p>
         )}
+        <div className="row" style={{ alignItems: 'center', gap: 10, margin: '6px 0 10px' }} data-testid="relief-days">
+          <span>Supplies for</span>
+          <div className="stepper" style={{ margin: 0 }}>
+            <button aria-label="Fewer days" onClick={() => setDays((d) => Math.max(1, d - 1))}>
+              −
+            </button>
+            <input aria-label="Days of supply" inputMode="numeric" value={days} onChange={(e) => setDays(Math.max(1, clampInt(e.target.value, 1, 30)))} />
+            <button aria-label="More days" onClick={() => setDays((d) => Math.min(30, d + 1))}>
+              +
+            </button>
+          </div>
+          <span>day{days === 1 ? '' : 's'}</span>
+        </div>
+        <p className="small" data-testid="relief-intro">
+          <span className="label-advisory">GOVT NORMS</span> Tick what is needed: the amount is worked out from {victims} {victims === 1 ? 'person' : 'people'} using Indian government relief norms
+          (NDMA, NDRF, Kerala SDMA). Change any amount if you know better.
+        </p>
         {RESOURCE_KEYS.map((k) => (
-          <ResourceRow key={k} k={k} value={requested[k]} hinted={hints.some((h) => h.resource === k)} onChange={(v) => setRequested((r) => ({ ...r, [k]: v }))} />
+          <ResourceRow
+            key={k}
+            k={k}
+            value={requested[k]}
+            hinted={hints.some((h) => h.resource === k)}
+            line={relief.lines[k]}
+            typed={manual.has(k)}
+            onTick={(on) => setResource(k, on ? 1 : 0, on ? 'tick' : 'untick')}
+            onType={(v) => setResource(k, v, 'typed')}
+            onReset={() => setResource(k, 1, 'tick')}
+          />
         ))}
+        {(requested.food_water ?? 0) > 0 && relief.drinkingWaterLitres > 0 && (
+          <p className="small" data-testid="relief-water">
+            💧 Plus at least <strong>{relief.drinkingWaterLitres} litres</strong> of drinking water ({victims} people × 3 L × {days} day{days === 1 ? '' : 's'}; NDMA Temporary Shelter Guidelines 2019).
+          </p>
+        )}
       </section>
 
       <section className="card">
@@ -423,17 +520,57 @@ export function ReportPage() {
   );
 }
 
-function ResourceRow({ k, value, hinted, onChange }: { k: ResourceKey; value?: number; hinted: boolean; onChange: (v: number) => void }) {
+function ResourceRow({
+  k,
+  value,
+  hinted,
+  line,
+  typed,
+  onTick,
+  onType,
+  onReset,
+}: {
+  k: ResourceKey;
+  value?: number;
+  hinted: boolean;
+  line?: RateLine;
+  typed: boolean;
+  onTick: (on: boolean) => void;
+  onType: (v: number) => void;
+  onReset: () => void;
+}) {
   const checked = (value ?? 0) > 0;
   return (
-    <label className="check" data-testid={`res-${k}`}>
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked ? Math.max(1, value ?? 1) : 0)} />
-      <span>
-        {RESOURCES[k].label}
-        {hinted && <span className="label-advisory" style={{ marginLeft: 6, fontSize: '0.7rem' }}>hint</span>}
-      </span>
-      <input className="qty" aria-label={`${RESOURCES[k].label} quantity (${RESOURCES[k].unit})`} inputMode="numeric" value={value ?? ''} placeholder={RESOURCES[k].unit} onChange={(e) => onChange(clampInt(e.target.value, 0, 1_000_000))} />
-    </label>
+    <div data-testid={`res-${k}`}>
+      <label className="check">
+        <input type="checkbox" checked={checked} onChange={(e) => onTick(e.target.checked)} />
+        <span>
+          {RESOURCES[k].label}
+          {hinted && <span className="label-advisory" style={{ marginLeft: 6, fontSize: '0.7rem' }}>hint</span>}
+        </span>
+        <input className="qty" aria-label={`${RESOURCES[k].label} quantity (${RESOURCES[k].unit})`} inputMode="numeric" value={value ?? ''} placeholder={RESOURCES[k].unit} onChange={(e) => onType(clampInt(e.target.value, 0, 1_000_000))} />
+      </label>
+      {checked && (
+        <p className="small muted relief-why" data-testid={`why-${k}`}>
+          {line && line.qty > 0 ? (
+            typed && line.qty !== value ? (
+              <>
+                You entered {value}. Government norm: {line.qty} ({line.why}).{' '}
+                <button className="btn small secondary" onClick={onReset}>
+                  Use {line.qty}
+                </button>
+              </>
+            ) : (
+              <>
+                = {line.why}. <span title={line.source}>Source: {line.source}.</span>
+              </>
+            )
+          ) : (
+            <>No per-person government rate for this – enter the amount you need.</>
+          )}
+        </p>
+      )}
+    </div>
   );
 }
 

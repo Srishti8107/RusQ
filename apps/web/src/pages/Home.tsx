@@ -4,8 +4,10 @@
  * Everything else follows as big, labelled buttons. No "Sent & waiting" page any more:
  * rescuers see the status of their own reports here.
  */
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import type { FieldReport } from '@rusq/shared';
+import { PRIORITY_LABEL, STATUS_LABEL, type Assignment, type FieldReport } from '@rusq/shared';
+import { api, friendlyError } from '../lib/api.ts';
 import { useCachedApi } from '../lib/cache.ts';
 import { useNow, useOutbox, useReach, useSession } from '../lib/hooks.ts';
 import { agoText } from '../lib/location.ts';
@@ -24,6 +26,8 @@ interface Tasks {
   teamId: string | null;
   tasks: { id: string; title: string; summary: string; approvedBy: string; approvedAt: string; note: string | null; reasoning: string[] }[];
   sos: { serverId: string; name: string; phone: string | null; contacts: { name: string; phone: string }[]; note: string | null; lat: number | null; lng: number | null }[];
+  /** control-room assignments for this team, highest priority first (older servers: missing) */
+  assignments?: Assignment[];
 }
 
 function Action({ to, icon, title, sub }: { to: string; icon: string; title: string; sub: string }) {
@@ -37,6 +41,62 @@ function Action({ to, icon, title, sub }: { to: string; icon: string; title: str
         <small>{sub}</small>
       </span>
     </Link>
+  );
+}
+
+function TeamAssignment({ a, now, online, reload }: { a: Assignment; now: number; online: boolean; reload: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [note, setNote] = useState('');
+  async function move(status: 'in_progress' | 'done') {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api(`/team/assignments/${a.id}/status`, { method: 'POST', body: JSON.stringify({ status, note: note.trim() || undefined }) });
+      await reload();
+    } catch (e) {
+      setErr(friendlyError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className={`card assignment ${a.priority}`} data-testid="team-assignment" data-priority={a.priority} data-status={a.status}>
+      <div className="row between">
+        <strong>
+          <span className={`prio ${a.priority}`}>{PRIORITY_LABEL[a.priority].toUpperCase()}</span> 📌 {a.place}
+        </strong>
+        <span className="small">{STATUS_LABEL[a.status]}</span>
+      </div>
+      <p className="small">
+        📍 {a.lat.toFixed(5)}, {a.lng.toFixed(5)} ·{' '}
+        <a href={`https://www.openstreetmap.org/?mlat=${a.lat}&mlon=${a.lng}#map=17/${a.lat}/${a.lng}`} target="_blank" rel="noreferrer">
+          open map
+        </a>{' '}
+        · {a.serverId} from {a.createdBy} {agoText(a.createdAt, now)}
+      </p>
+      {a.instructions && <p>{a.instructions}</p>}
+      <label className="field small">
+        Note for the control room (optional)
+        <input value={note} maxLength={500} onChange={(e) => setNote(e.target.value)} placeholder="e.g. 12 people moved to the school" />
+      </label>
+      <div className="row">
+        {a.status === 'assigned' && (
+          <button className="btn small" disabled={busy || !online} onClick={() => void move('in_progress')}>
+            🚤 We are on our way
+          </button>
+        )}
+        <button className="btn small secondary" disabled={busy || !online} onClick={() => void move('done')}>
+          ✅ Done
+        </button>
+      </div>
+      {!online && <p className="small muted">Needs a connection to tell the control room.</p>}
+      {err && (
+        <div className="banner bad" role="alert">
+          {err}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -66,7 +126,10 @@ export function Home() {
         <div className="card" data-testid="team-tasks">
           <h2>Tasks for your team</h2>
           {!tasks.live && tasks.at && <p className="small muted">Saved {agoText(tasks.at, now)} – no connection right now.</p>}
-          {tasks.data.tasks.length === 0 && tasks.data.sos.length === 0 && <p>No tasks from the control room yet.</p>}
+          {tasks.data.tasks.length === 0 && tasks.data.sos.length === 0 && !tasks.data.assignments?.length && <p>No tasks from the control room yet.</p>}
+          {tasks.data.assignments?.map((a) => (
+            <TeamAssignment key={a.id} a={a} now={now} online={reach === 'online'} reload={tasks.reload} />
+          ))}
           {tasks.data.sos.map((s) => (
             <div className="banner bad" key={s.serverId}>
               🆘 Help {s.name} ({s.serverId}){s.lat !== null ? ` at ${s.lat.toFixed(4)}, ${s.lng!.toFixed(4)}` : ' – no location'}.
@@ -130,6 +193,8 @@ export function Home() {
         {field && <Action to="/missing" icon="🔎" title="Missing family member" sub="Report someone you cannot find" />}
         {field && <Action to="/profile" icon="👤" title="My profile" sub="Your details and family contacts" />}
         {field && <Action to="/nearby" icon="📶" title="Nearby phones" sub="Connects by itself on the same Wi-Fi or hotspot" />}
+        {(role === 'rescuer' || role === 'admin') && <Action to="/codes" icon="📨" title="Short codes (SMS)" sub={role === 'admin' ? 'Enter reports that came by SMS or phone call' : 'Got a report code by SMS? Pass it on'} />}
+        {role === 'admin' && <Action to="/admin/assignments" icon="📌" title="Team assignments" sub="Send teams to locations by priority" />}
         {role === 'admin' && <Action to="/admin/reconcile" icon="⚖️" title="Allotments & conflicts" sub="Approve or reject provisional allotments" />}
         {role === 'admin' && <Action to="/admin/missing" icon="🔎" title="Missing persons" sub="Review candidates, verify, announce" />}
         {field && <Action to="/setup" icon="✅" title="Ready for offline" sub="Check this phone has everything saved" />}

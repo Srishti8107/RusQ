@@ -42,6 +42,7 @@ import {
   teamTasks,
 } from './ops-service.ts';
 import { HttpError, type Services } from './services.ts';
+import { nepalContext, REFERENCE_EVENT_2024 } from './nepal/context.ts';
 
 export async function registerPhase2Routes(app: FastifyInstance, services: Services, keys: ServerKeys, opts: { registerRateLimitMax?: number }) {
   const any = requireRole(keys.tokenSecret);
@@ -117,6 +118,12 @@ export async function registerPhase2Routes(app: FastifyInstance, services: Servi
     return { ok: true, rec };
   });
 
+  /** Real Nepal background data for the sample region (WorldPop 2024, flood-prone terrain, OSM rivers + hospitals) + official 2024 figures. */
+  app.get('/api/admin/nepal-context', { preHandler: admin }, async () => {
+    const c = nepalContext();
+    return { region: c.region, sources: c.sources, totals: c.totals, cells: c.cells, hospitals: c.hospitals, rivers: c.rivers, floodProneImage: c.floodProneImage, reference: REFERENCE_EVENT_2024 };
+  });
+
   app.get('/api/admin/cctv', { preHandler: admin }, async () => ({ enabled: cctvEnabled(services), cameras: SAMPLE_CCTV, signals: cctvSignals(SAMPLE_CCTV), sample: true }));
 
   app.put('/api/admin/cctv', { preHandler: admin }, async (req) => {
@@ -161,7 +168,7 @@ export async function registerPhase2Routes(app: FastifyInstance, services: Servi
     type Row = { id: string; server_id: string; data: string; via: string; received_at: string; relay_hops: number | null; relay_gateway: string | null };
     const q = (table: string) =>
       db.prepare(`SELECT id, server_id, data, via, received_at, relay_hops, relay_gateway FROM ${table} WHERE received_at > ? ORDER BY received_at LIMIT 50`).all(since) as unknown as Row[];
-    const relay = (r: Row) => (r.via === 'relay' ? { hops: r.relay_hops, gateway: r.relay_gateway } : null);
+    const relay = (r: Row) => (r.via === 'relay' || r.via === 'code' ? { hops: r.relay_hops, gateway: r.relay_gateway, ...(r.via === 'code' ? { shortCode: true } : {}) } : null);
     const items = [
       ...q('sos').map((r) => {
         const s = JSON.parse(r.data) as { profile?: { name?: string; householdSize?: number }; lat: number | null; lng: number | null };
@@ -190,6 +197,25 @@ export async function registerPhase2Routes(app: FastifyInstance, services: Servi
       ...q('missing_reports').map((r) => {
         const x = JSON.parse(r.data) as { person: { name: string }; lastSeen: { place: string } };
         return { kind: 'missing' as const, id: r.id, serverId: r.server_id, receivedAt: r.received_at, title: `Missing person: ${x.person.name}`, detail: `Last seen: ${x.lastSeen.place}`, relay: relay(r) };
+      }),
+      // a team reported progress on an assignment (the control room's own changes are not echoed)
+      ...(
+        db
+          .prepare("SELECT a.id AS audit_id, a.action, a.at, a.details, s.data FROM audit a JOIN assignments s ON s.id = a.target WHERE a.action IN ('assignment.in_progress', 'assignment.done') AND a.at > ? ORDER BY a.seq LIMIT 50")
+          .all(since) as { audit_id: string; action: string; at: string; details: string | null; data: string }[]
+      ).map((r) => {
+        const x = JSON.parse(r.data) as { serverId: string; teamId: string; place: string; priority: string };
+        const note = (JSON.parse(r.details ?? '{}') as { note?: string }).note;
+        const team = x.teamId.split('-').map((w) => w[0]!.toUpperCase() + w.slice(1)).join(' ');
+        return {
+          kind: 'assignment' as const,
+          id: r.audit_id,
+          serverId: x.serverId,
+          receivedAt: r.at,
+          title: r.action === 'assignment.done' ? `${team} finished: ${x.place}` : `${team} is on the way to ${x.place}`,
+          detail: `${x.priority} priority${note ? ` · “${note}”` : ''}`,
+          relay: null,
+        };
       }),
     ].sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
     return { now: items.length ? items.at(-1)!.receivedAt : now, items };

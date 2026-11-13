@@ -48,9 +48,11 @@ export interface Settings {
   visionMock: boolean;
   /** OPTIONAL on-device AI writing helper (Llama 3.2 1B, WebGPU). Off by default. */
   assistant: boolean;
+  /** phone numbers rescuer short codes are sent to by SMS (control-room gateway, other rescuers) */
+  smsNumbers: string;
 }
 
-export const DEFAULT_SETTINGS: Settings = { lowPower: false, staleHours: 6, visionMock: false, assistant: false };
+export const DEFAULT_SETTINGS: Settings = { lowPower: false, staleHours: 6, visionMock: false, assistant: false, smsNumbers: '' };
 
 export async function getSettings(): Promise<Settings> {
   return { ...DEFAULT_SETTINGS, ...((await kvGet<Partial<Settings>>(K.settings)) ?? {}) };

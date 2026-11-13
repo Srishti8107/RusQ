@@ -30,11 +30,40 @@ export interface DashboardData {
 }
 
 const SEV_COLOR = { critical: '#3D0C0C', high: '#B06B68', medium: '#F5E3E3', low: '#FFFFFF' };
+const FLOOD_COLOR = '#1f6fb2';
+const RIVER_COLOR = '#0b3d91';
+
+/** Real Nepal background data (server: WorldPop 2024, Copernicus DEM + OSM rivers, OSM hospitals) + official 2024 figures. */
+export interface NepalContext {
+  region: { name: string; bounds: [number, number, number, number] };
+  sources: Record<'residents' | 'terrain' | 'health', { title: string; url: string; license: string; caution: string }>;
+  totals: { residents: number; residentsFloodProne: number; floodProneKm2: number; moderateKm2: number };
+  hospitals: { id: string; name: string; kind: 'hospital' | 'clinic'; lat: number; lng: number; emergency?: boolean; floodProne?: boolean }[];
+  rivers: FeatureCollection;
+  floodProneImage: { url: string; coordinates: [number, number][] };
+  reference: {
+    title: string;
+    source: string;
+    url: string;
+    deaths: number;
+    missing: number;
+    injured: number;
+    rescued: string;
+    emergencyMunicipalities: number;
+    emergencyDistricts: number;
+    kathmanduRainfall: string;
+    bagmatiHouseholds: { fully: number; partially: number };
+    rainfallPeriod: string;
+    caution: string;
+  };
+}
 
 export function AdminDashboard() {
   const q = useCachedApi<DashboardData>('/admin/dashboard', 30_000);
   const d = q.data;
-  const [show, setShow] = useState({ zones: true, heat: true, sos: true, reports: true, shelters: true, cctv: true });
+  const nepal = useCachedApi<NepalContext>('/admin/nepal-context');
+  const n = nepal.data;
+  const [show, setShow] = useState({ floodProne: true, rivers: true, zones: true, heat: true, sos: true, reports: true, shelters: true, hospitals: false, cctv: true });
 
   const overlay: MapLayers | undefined = useMemo(() => {
     if (!d) return undefined;
@@ -54,8 +83,14 @@ export function AdminDashboard() {
     );
     const vis = (on: boolean) => ({ visibility: on ? 'visible' : 'none' }) as { visibility: 'visible' | 'none' };
     return {
-      sources: { zones: { type: 'geojson', data: zones }, heat: { type: 'geojson', data: heat }, sos: { type: 'geojson', data: sos }, reps: { type: 'geojson', data: reps } },
+      sources: {
+        ...(n ? { floodProne: { type: 'image' as const, url: n.floodProneImage.url, coordinates: n.floodProneImage.coordinates as [[number, number], [number, number], [number, number], [number, number]] } } : {}),
+        rivers: { type: 'geojson', data: n?.rivers ?? fc([]) },
+        zones: { type: 'geojson', data: zones },
+        heat: { type: 'geojson', data: heat }, sos: { type: 'geojson', data: sos }, reps: { type: 'geojson', data: reps } },
       layers: [
+        ...(n ? [{ id: 'floodProne', type: 'raster' as const, source: 'floodProne', layout: vis(show.floodProne), paint: { 'raster-opacity': 0.85, 'raster-resampling': 'nearest' as const } }] : []),
+        { id: 'rivers', type: 'line', source: 'rivers', layout: vis(show.rivers), paint: { 'line-color': RIVER_COLOR, 'line-width': ['interpolate', ['linear'], ['zoom'], 11, 1.2, 16, 4] } },
         {
           id: 'zones-fill',
           type: 'fill',
@@ -100,17 +135,19 @@ export function AdminDashboard() {
         sos: (p) => `SOS ${p.id}\n${p.name}\nStatus: ${p.status}`,
         reps: (p) => `Report ${p.id} (${p.team})\n${p.victims} people · urgency ${p.urgency}\n${p.hazards || 'no hazard tags'}`,
         'zones-fill': (p) => `Area: ${String(p.severity).toUpperCase()}\nScore ${p.score} · ${p.people} people · ${p.sos} open SOS`,
+        rivers: (p) => `${p.name} (OpenStreetMap)`,
       },
     };
-  }, [d, show]);
+  }, [d, show, n]);
 
   const markers: MapMarker[] = useMemo(() => {
     if (!d) return [];
     return [
       ...(show.shelters ? d.shelters.map((s) => ({ id: s.id, lat: s.lat, lng: s.lng, kind: 'shelter' as const, label: `🏠 ${s.free ?? '?'} free`, title: `${s.name}: ${s.occupancy}/${s.capacity ?? '?'}` })) : []),
       ...(show.cctv ? d.map.cctv.map((c) => ({ id: c.id, lat: c.lat, lng: c.lng, kind: 'cctv' as const, label: `📹 ${c.id}`, title: `${c.name} – SAMPLE CCTV` })) : []),
+      ...(show.hospitals && n ? n.hospitals.filter((h) => h.kind === 'hospital').map((h) => ({ id: h.id, lat: h.lat, lng: h.lng, kind: 'hospital' as const, label: '🏥', title: `${h.name} (OpenStreetMap)${h.floodProne ? ' – on low-lying flood-prone land' : ''}` })) : []),
     ];
-  }, [d, show]);
+  }, [d, show, n]);
 
   const c = d?.counts;
   const maxBar = Math.max(1, ...(d?.timeline.map((t) => t.sos + t.reports) ?? [1]));
@@ -140,11 +177,14 @@ export function AdminDashboard() {
       <fieldset className="card legend" aria-label="Map layers">
         {(
           [
+            ['floodProne', 'Flood-prone land near rivers (terrain model – dark: ≤ 3 m above the river, light: ≤ 6 m)', FLOOD_COLOR],
+            ['rivers', 'Rivers (OpenStreetMap)', RIVER_COLOR],
             ['zones', 'Hot zones (area score)', '#B06B68'],
             ['heat', 'People density (heatmap)', '#3D0C0C'],
             ['sos', 'SOS (red open · blue assigned · grey resolved)', '#7F0000'],
             ['reports', 'Field reports (bigger = more urgent)', '#5C3A1A'],
             ['shelters', 'Shelters (free places)', '#0B4A22'],
+            ['hospitals', `Hospitals (OpenStreetMap – real${n ? `, ${n.hospitals.filter((h) => h.kind === 'hospital').length}` : ''})`, '#0b5d7a'],
             ['cctv', 'Sample CCTV cameras', '#4B2A7A'],
           ] as const
         ).map(([k, label, col]) => (
@@ -177,13 +217,15 @@ export function AdminDashboard() {
                 <th>People</th>
                 <th>Open SOS</th>
                 <th>Hazards</th>
+                <th title="WorldPop 2020 estimate of people living in this ≈1 km area – not people needing help">Residents (est.)</th>
+                <th title="Share of the area that is low-lying land next to a river (≤ 3 m above it) – terrain model">Flood-prone land</th>
                 <th>Score</th>
               </tr>
             </thead>
             <tbody>
               {d.cells.filter((x) => x.severity !== 'low').length === 0 && (
                 <tr>
-                  <td colSpan={6}>No area above “low” yet.</td>
+                  <td colSpan={8}>No area above “low” yet.</td>
                 </tr>
               )}
               {d.cells
@@ -197,6 +239,8 @@ export function AdminDashboard() {
                     <td>{x.people}</td>
                     <td>{x.openSos}</td>
                     <td>{[...x.hazards, ...(x.evidence.cctv.length ? ['CCTV sample'] : [])].join(', ') || '–'}</td>
+                    <td>{x.context ? x.context.residents.toLocaleString() : '–'}</td>
+                    <td>{x.context ? `${Math.round(x.context.floodProneShare * 100)} %` : '–'}</td>
                     <td>{x.score}</td>
                   </tr>
                 ))}
@@ -205,6 +249,8 @@ export function AdminDashboard() {
           <Link to="/admin/decisions">See recommendations and the reasons →</Link>
         </div>
       )}
+
+      {n && <NepalReference n={n} />}
 
       {d && (
         <div className="card table-wrap" data-testid="resources" tabIndex={0}>
@@ -323,6 +369,63 @@ function AlertsNote() {
         </button>
       )}
       {perm === 'granted' && <span>Desktop notifications are on (shown when this tab is in the background).</span>}
+    </div>
+  );
+}
+
+/** Official figures and the real data sources behind the map layers (Nepal sample region). */
+function NepalReference({ n }: { n: NepalContext }) {
+  const r = n.reference;
+  const hosp = n.hospitals.filter((h) => h.kind === 'hospital').length;
+  const clin = n.hospitals.filter((h) => h.kind === 'clinic').length;
+  const wet = n.hospitals.filter((h) => h.floodProne).length;
+  return (
+    <div className="card" data-testid="nepal-reference">
+      <h2>Reference: {r.title}</h2>
+      <p className="small">
+        Official figures from{' '}
+        <a href={r.url} target="_blank" rel="noreferrer">
+          {r.source}
+        </a>
+        . Rainfall {r.rainfallPeriod}. {r.kathmanduRainfall}.
+      </p>
+      <div className="ref-grid">
+        <div>
+          <strong>{r.deaths}</strong>deaths
+        </div>
+        <div>
+          <strong>{r.missing}</strong>missing
+        </div>
+        <div>
+          <strong>{r.injured}</strong>injured
+        </div>
+        <div>
+          <strong>{r.rescued}</strong>people rescued
+        </div>
+        <div>
+          <strong>{r.emergencyMunicipalities}</strong>municipalities in {r.emergencyDistricts} districts declared emergency zones
+        </div>
+        <div>
+          <strong>{r.bagmatiHouseholds.fully.toLocaleString()}</strong>households fully affected in Bagmati ({r.bagmatiHouseholds.partially.toLocaleString()} partially)
+        </div>
+      </div>
+      <p className="small muted">{r.caution}</p>
+      <h3>In this map region ({n.region.name})</h3>
+      <p className="small" data-testid="nepal-exposure">
+        About <strong>{n.totals.residents.toLocaleString()}</strong> people live in this map region (WorldPop 2024 estimate). <strong>{n.totals.floodProneKm2} km²</strong> is low-lying land next to a river
+        (≤ 3 m above it) and another {n.totals.moderateKm2} km² is ≤ 6 m above it; about <strong>{n.totals.residentsFloodProne.toLocaleString()}</strong> people live on the low-lying land. {hosp} hospitals and{' '}
+        {clin} clinics are mapped in OpenStreetMap{wet ? `; ${wet} of them are on low-lying flood-prone land` : ''}.
+      </p>
+      <ul className="small muted">
+        {Object.values(n.sources).map((x) => (
+          <li key={x.title}>
+            <a href={x.url} target="_blank" rel="noreferrer">
+              {x.title}
+            </a>{' '}
+            – {x.license}. {x.caution}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

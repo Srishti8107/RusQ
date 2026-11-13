@@ -9,6 +9,7 @@ import {
   decide,
   distanceM,
   hasMedicalNeed,
+  isActive,
   isVulnerable,
   RESOURCE_KEYS,
   SAMPLE_CCTV,
@@ -27,6 +28,8 @@ import {
 import { hashPassword } from './auth.ts';
 import { kvGet, kvSet } from './db.ts';
 import { HttpError, type Services } from './services.ts';
+import { listAssignments } from './assignment-service.ts';
+import { areaContext, inRegion, nearestFacility } from './nepal/context.ts';
 
 /* ------------------------------ profiles ------------------------------ */
 
@@ -81,7 +84,7 @@ export function shelters(s: Services) {
 
 /* ------------------------------ teams ------------------------------ */
 
-function teamName(teamId: string): string {
+export function teamName(teamId: string): string {
   return teamId
     .split('-')
     .map((w) => w[0]!.toUpperCase() + w.slice(1))
@@ -124,6 +127,7 @@ export function decisionInput(s: Services): DecisionInput {
     shelters: s.sites().filter((x) => x.kind === 'shelter'),
     teams: teams(s),
     cctv: cctvEnabled(s) ? cctvSignals(SAMPLE_CCTV) : [],
+    areaContext: areaContext(),
     reports: s.listReports().map((r) => ({
       id: r.id,
       serverId: r.serverId,
@@ -191,7 +195,7 @@ export function teamTasks(s: Services, teamId: string | null) {
     .listSos()
     .filter((x) => x.assignedTeam === teamId && x.status !== 'resolved')
     .map((x) => ({ serverId: x.serverId, lat: x.lat, lng: x.lng, name: x.profile?.name ?? 'Unknown', contacts: x.profile?.contacts ?? [], phone: x.profile?.phone ?? null, note: x.opsNote, createdAt: x.createdAt }));
-  return { tasks, sos };
+  return { tasks, sos, assignments: listAssignments(s, teamId).filter(isActive) };
 }
 
 /* ------------------------------ SOS monitor ------------------------------ */
@@ -212,6 +216,9 @@ export function sosMonitor(s: Services) {
       triage: x.status === 'resolved' ? { level: 1, reasons: ['resolved'] } : triage,
       delayMs: Date.parse(x.receivedAt) - Date.parse(x.createdAt),
       areaSeverity: cell?.severity ?? null,
+      areaContext: cell?.context ?? null,
+      // real OpenStreetMap hospital nearest to the person (sample region only)
+      nearestHospital: x.lat !== null && x.lng !== null && inRegion({ lat: x.lat, lng: x.lng }) ? nearestFacility({ lat: x.lat, lng: x.lng }) : null,
     };
   });
 }

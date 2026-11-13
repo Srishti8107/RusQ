@@ -14,7 +14,7 @@ import { HLC_RE } from './hlc.ts';
 import { hmacSign, hmacVerify } from './crypto.ts';
 
 export const MESH_PROTOCOL_VERSION = 1;
-export const MESH_TYPES = ['sos', 'ack', 'allotment', 'report', 'photo_thumb', 'photo_chunk', 'missing'] as const;
+export const MESH_TYPES = ['sos', 'ack', 'allotment', 'report', 'photo_thumb', 'photo_chunk', 'missing', 'code'] as const;
 export type MeshType = (typeof MESH_TYPES)[number];
 
 /** Lower number = sent first. SOS/acks/allotments are small and urgent; photos last. */
@@ -24,6 +24,8 @@ export const DEFAULT_PRIORITY: Record<MeshType, number> = {
   allotment: 1,
   report: 1,
   missing: 1,
+  /** rescuer short code (shortcode.ts) received by SMS / read out – tiny, so it goes early */
+  code: 1,
   photo_thumb: 2,
   photo_chunk: 3,
 };
@@ -41,6 +43,9 @@ export const ChunkInfo = z.object({
   sha256: z.string().regex(/^[0-9a-f]{64}$/),
 });
 export type ChunkInfo = z.infer<typeof ChunkInfo>;
+
+/** A rescuer short code as text; the server checks its signature and that the envelope id is shortCodeId(team, ref). */
+export const CodePayload = z.object({ text: z.string().min(10).max(200) });
 
 export const PhotoPayload = z.object({
   data: z.string().max(MAX_ENVELOPE_BYTES), // base64 bytes
@@ -70,6 +75,7 @@ const PAYLOAD_SCHEMA: Record<MeshType, z.ZodTypeAny> = {
   allotment: Allotment,
   missing: MissingReport,
   ack: Ack,
+  code: CodePayload,
   photo_thumb: PhotoPayload,
   photo_chunk: PhotoPayload,
 };

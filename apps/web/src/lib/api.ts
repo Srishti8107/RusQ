@@ -7,6 +7,7 @@
  * friendly text, the saved copy is used, and the sync engine simply retries.
  */
 import { getSession } from './session.ts';
+import { apiUrl } from './platform.ts';
 
 export class ApiError extends Error {
   constructor(
@@ -36,7 +37,7 @@ export async function api<T>(path: string, init: RequestInit & { timeoutMs?: num
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(`/api${path}`, { ...rest, headers, signal: ctrl.signal, cache: 'no-store' });
+    const res = await fetch(apiUrl(path), { ...rest, headers, signal: ctrl.signal, cache: 'no-store' });
     const text = await res.text();
     const body = parseJson(text);
     if (body === NOT_JSON) {

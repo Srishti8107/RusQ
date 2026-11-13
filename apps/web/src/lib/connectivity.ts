@@ -15,6 +15,7 @@
  *  5. Error pages from a proxy / tunnel (HTTP 502/530 HTML pages) counted as "reached".
  *     → only a JSON {ok:true} from /api/health counts.
  */
+import { apiUrl } from './platform.ts';
 import { setReachReporter } from './api.ts';
 
 export type Reach = 'online' | 'offline' | 'checking';
@@ -67,7 +68,7 @@ export async function probe(timeoutMs = PROBE_TIMEOUT_MS): Promise<Reach> {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      const res = await fetch(`/api/health?t=${Date.now()}`, { cache: 'no-store', signal: ctrl.signal });
+      const res = await fetch(apiUrl(`/health?t=${Date.now()}`), { cache: 'no-store', signal: ctrl.signal });
       const body = res.ok ? await res.text() : '';
       let ok = false;
       try {

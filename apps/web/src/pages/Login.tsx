@@ -7,6 +7,8 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, ApiError, friendlyError } from '../lib/api.ts';
 import { setSession, type Session } from '../lib/session.ts';
 import { pullProfile } from '../lib/profile.ts';
+import { isNativeApp, serverOrigin, setServerUrl } from '../lib/platform.ts';
+import { useWebPolicy } from '../lib/webpolicy.ts';
 
 export function Login() {
   const [userId, setUserId] = useState('');
@@ -15,11 +17,14 @@ export function Login() {
   const [busy, setBusy] = useState(false);
   const nav = useNavigate();
   const [params] = useSearchParams();
+  const [server, setServer] = useState(serverOrigin());
+  const policy = useWebPolicy();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
+    if (isNativeApp) setServerUrl(server);
     try {
       const s = await api<Session>('/auth/login', { method: 'POST', auth: false, body: JSON.stringify({ username: userId.trim().toLowerCase(), password }) });
       await setSession(s);
@@ -40,8 +45,19 @@ export function Login() {
   return (
     <div>
       <h1>Sign in to RusQ</h1>
+      {!isNativeApp && policy && !policy.webFieldRoles && (
+        <p className="banner info" data-testid="web-admin-only">
+          This website is for the control room. Rescue teams and people needing help: <Link to="/app">install the RusQ Android app</Link>.
+        </p>
+      )}
       <p>Sign in once while you have internet. After that, the app keeps working without a connection.</p>
       <form onSubmit={submit} className="card">
+        {isNativeApp && (
+          <label className="field">
+            Control-room server address
+            <input inputMode="url" value={server} onChange={(e) => setServer(e.target.value)} placeholder="https://rusq.example.org" name="server" autoCapitalize="none" spellCheck={false} required />
+          </label>
+        )}
         <label className="field">
           Your user ID
           <input autoComplete="username" value={userId} onChange={(e) => setUserId(e.target.value)} required name="userId" autoCapitalize="none" spellCheck={false} />

@@ -12,6 +12,7 @@ import { permissionState, refreshLastKnown } from './location.ts';
 import { resetRelayNode } from './relay.ts';
 import type { Role } from '@rusq/shared';
 import { downloadModelFiles, loadVision, modelFiles, verifyModelsStored } from './vision.ts';
+import { isNativeApp } from './platform.ts';
 
 export type ItemId = 'shell' | 'keys' | 'snapshot' | 'map' | 'shelters' | 'vision' | 'location' | 'storage';
 
@@ -42,9 +43,11 @@ export const CHECKLIST: CheckItem[] = [
       }
     },
     download: async () => {
-      await navigator.serviceWorker?.ready;
+      if (!isNativeApp) await navigator.serviceWorker?.ready;
     },
     verify: async () => {
+      // Android app: the app files are inside the installed app – nothing to download.
+      if (isNativeApp) return { ok: true, detail: 'Built into the installed app' };
       if (!('serviceWorker' in navigator)) return { ok: false, detail: 'This browser cannot work offline (no service worker).' };
       const reg = await navigator.serviceWorker.getRegistration();
       if (!reg?.active) return { ok: false, detail: 'Still installing…' };
@@ -128,11 +131,13 @@ export const CHECKLIST: CheckItem[] = [
   {
     id: 'vision',
     label: 'Photo helper (vision models)',
-    why: 'Suggests hazards and counts people in photos – works offline. About 116 MB.',
+    why: isNativeApp
+      ? 'Suggests hazards and counts people in photos – works offline. Downloads about 95 MB from the control-room server once.'
+      : 'Suggests hazards and counts people in photos – works offline. About 116 MB.',
     roles: ['rescuer'],
     sizeBytes: async () => {
       try {
-        return (await modelFiles()).reduce((s, f) => s + f.bytes, 0) + 21_650_000;
+        return (await modelFiles()).reduce((s, f) => s + f.bytes, 0) + (isNativeApp ? 0 : 21_650_000);
       } catch {
         return null;
       }
@@ -152,13 +157,39 @@ export const CHECKLIST: CheckItem[] = [
   },
   {
     id: 'location',
-    label: 'Location permission',
-    why: 'GPS works without internet. Allow it now so SOS can include where you are.',
+    label: isNativeApp ? 'Location and nearby devices' : 'Location permission',
+    why: isNativeApp
+      ? 'GPS works without internet, so SOS can include where you are. “Nearby devices” lets RusQ phones find each other over Bluetooth / Wi-Fi Direct.'
+      : 'GPS works without internet. Allow it now so SOS can include where you are.',
     roles: ['victim', 'rescuer', 'admin'],
-    download: async () => {
+    download: async (progress) => {
+      if (isNativeApp) {
+        // 1. location – through Capacitor's own Geolocation plugin (Android's location permission dialog)
+        progress('Asking for location… answer the Android pop-up');
+        const { Geolocation } = await import('@capacitor/geolocation');
+        await withLimit(Geolocation.requestPermissions({ permissions: ['location'] }), 30_000).catch(() => null);
+        // 2. nearby devices (Bluetooth / Wi-Fi) for the phone-to-phone link
+        progress('Asking for “Nearby devices”… answer the Android pop-up');
+        const { requestNativePermissions } = await import('./nearby.ts');
+        await withLimit(requestNativePermissions(), 30_000).catch(() => null);
+        progress('Checking…');
+        void refreshLastKnown(); // first GPS fix in the background – the step does not wait for it
+        return;
+      }
       await refreshLastKnown();
     },
     verify: async () => {
+      if (isNativeApp) {
+        // the browser permission API does not see Android app permissions – ask Android itself
+        const { Geolocation } = await import('@capacitor/geolocation');
+        const loc = (await withLimit(Geolocation.checkPermissions(), 5000).catch(() => null))?.location ?? 'prompt';
+        const { nativePermissions } = await import('./nearby.ts');
+        const near = await nativePermissions();
+        const fix = 'Android settings → Apps → RusQ → Permissions';
+        if (loc === 'granted' && near?.granted) return { ok: true, detail: 'Location and nearby devices allowed' };
+        if (loc !== 'granted') return { ok: false, detail: loc === 'denied' ? `Location is blocked – allow it in ${fix}` : 'Tap to allow location' };
+        return { ok: false, detail: near?.denied ? `Location allowed; “Nearby devices” is blocked – allow it in ${fix}` : 'Location allowed – tap again to allow “Nearby devices”' };
+      }
       const s = await permissionState();
       if (s === 'granted') return { ok: true, detail: 'Allowed' };
       if (s === 'unsupported') {
@@ -174,11 +205,13 @@ export const CHECKLIST: CheckItem[] = [
     why: 'Asks the phone not to delete RusQ data when space runs low.',
     roles: ['victim', 'rescuer', 'admin'],
     download: async () => {
-      await navigator.storage?.persist?.();
+      if (!isNativeApp) await navigator.storage?.persist?.();
     },
     verify: async () => {
+      // Android app: its data is private to the app and kept until the app is uninstalled.
+      if (isNativeApp) return { ok: true, detail: 'Kept by the app until it is uninstalled' };
       const persisted = (await navigator.storage?.persisted?.()) ?? false;
-      return persisted ? { ok: true, detail: 'Protected' } : { ok: false, detail: 'Not protected – the phone may clear data if storage is low' };
+      return persisted ? { ok: true, detail: 'Protected' } : { ok: false, detail: 'Not protected yet – Chrome decides this itself (usually after “Add to home screen”). RusQ still works; the phone may only clear its data when storage is very low.' };
     },
   },
 ];
@@ -196,4 +229,8 @@ export function mb(bytes: number | null | undefined): string {
   if (bytes == null) return '–';
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+function withLimit<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error('no answer in time')), ms))]);
 }

@@ -4,6 +4,7 @@
  *   RUSQ_DB (default ./data/rusq.db) · RUSQ_STATIC (built web app dir)
  *   RUSQ_SEED=0 disables the sample data and the admin account seed
  *   RUSQ_TEST_USERS=1 adds the automated-test fixture accounts (tests only)
+ *   RUSQ_SMS_SECRET turns on POST /api/sms/inbound (SMS gateway for rescuer short codes)
  */
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -13,6 +14,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? '0.0.0.0';
 const dbPath = process.env.RUSQ_DB ? resolve(process.env.RUSQ_DB) : resolve(here, '../data/rusq.db');
+// Android app offered at /rusq.apk (next to the database, not relative to the current folder)
+const apkPath = process.env.RUSQ_APK ? resolve(process.env.RUSQ_APK) : resolve(here, '../data/rusq.apk');
 const staticDir = process.env.RUSQ_STATIC ? resolve(process.env.RUSQ_STATIC) : resolve(here, '../../web/dist');
 
 const { app } = await buildApp({
@@ -20,6 +23,7 @@ const { app } = await buildApp({
   seed: process.env.RUSQ_SEED !== '0',
   testUsers: process.env.RUSQ_TEST_USERS === '1',
   staticDir,
+  apkPath,
   logger: process.env.NODE_ENV !== 'test',
   rateLimitMax: process.env.RUSQ_RATE_LIMIT ? Number(process.env.RUSQ_RATE_LIMIT) : undefined,
   loginRateLimitMax: process.env.RUSQ_LOGIN_RATE_LIMIT ? Number(process.env.RUSQ_LOGIN_RATE_LIMIT) : undefined,

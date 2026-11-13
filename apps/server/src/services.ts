@@ -9,7 +9,13 @@ import {
   reconcile,
   Reassembler,
   RESOURCE_KEYS,
+  parseShortCode,
   sha256Hex,
+  shortCodeId,
+  shortCodeToReport,
+  shortRef,
+  ShortCodeError,
+  verifyShortCode,
   signAck,
   Snapshot,
   validateEnvelope,
@@ -28,6 +34,10 @@ import type { ServerKeys } from './keys.ts';
 import { proposeCandidates } from './missing-service.ts';
 
 export type Via = 'direct' | 'relay';
+
+export type CodeResult =
+  | { ok: true; ack: Ack; duplicate: boolean; code: ReturnType<typeof parseShortCode> }
+  | { ok: false; reason: string };
 
 export class Services {
   constructor(
@@ -79,15 +89,60 @@ export class Services {
       | undefined;
     if (existing) return this.ack(r.id, 'report', existing.server_id, existing.received_at, true);
     const at = this.now().toISOString();
+    const ref = await shortRef(r.id);
+    // The short code of this report arrived first: the full report replaces it (same RPT number).
+    // received_at stays the time the code arrived: the control room already got the pop-up then.
+    const code = this.db.prepare("SELECT id, server_id, received_at FROM reports WHERE team_id = ? AND short_ref = ? AND via = 'code'").get(r.teamId, ref) as
+      | { id: string; server_id: string; received_at: string }
+      | undefined;
+    if (code) {
+      this.db.prepare('UPDATE reports SET id = ?, data = ?, via = ?, relay_hops = NULL, relay_gateway = NULL WHERE id = ?').run(r.id, JSON.stringify(r), via, code.id);
+      this.audit(actor, 'report.completed', r.id, { serverId: code.server_id, via, replacedShortCode: code.id, at });
+      return this.ack(r.id, 'report', code.server_id, code.received_at, false);
+    }
     const serverId = tx(this.db, () => {
       const sid = nextServerId(this.db, 'RPT');
       this.db
-        .prepare('INSERT INTO reports (id, server_id, team_id, data, via, received_at) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(r.id, sid, r.teamId, JSON.stringify(r), via, at);
+        .prepare('INSERT INTO reports (id, server_id, team_id, data, via, received_at, short_ref) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(r.id, sid, r.teamId, JSON.stringify(r), via, at, ref);
       return sid;
     });
     this.audit(actor, 'report.received', r.id, { serverId, via });
     return this.ack(r.id, 'report', serverId, at, false);
+  }
+
+  /**
+   * A rescuer SHORT CODE (shared/shortcode.ts) typed in, pasted from an SMS, forwarded by an
+   * SMS gateway or relayed between phones. Stored as a field report until the full report
+   * arrives (ingestReport then replaces it). Copies of the same code – and a code arriving
+   * after its full report – are duplicates.
+   */
+  async ingestCode(text: string, actor: string, extraHops = 0): Promise<CodeResult> {
+    let c: ReturnType<typeof parseShortCode>;
+    try {
+      c = parseShortCode(text);
+    } catch (e) {
+      return { ok: false, reason: e instanceof ShortCodeError ? e.message : 'not a valid code' };
+    }
+    if (!(await verifyShortCode(c, this.keys.teamKey))) return { ok: false, reason: 'signature does not match (typing mistake, or not made with the RusQ team key)' };
+    if (Date.parse(c.createdAt) > this.now().getTime() + 24 * 3600_000) return { ok: false, reason: 'the time in the code is in the future' };
+    const id = await shortCodeId(c.teamId, c.ref);
+    const existing = this.db.prepare('SELECT server_id, received_at FROM reports WHERE id = ? OR (team_id = ? AND short_ref = ?)').get(id, c.teamId, c.ref) as
+      | { server_id: string; received_at: string }
+      | undefined;
+    if (existing) return { ok: true, duplicate: true, code: c, ack: await this.ack(id, 'report', existing.server_id, existing.received_at, true) };
+    const at = this.now().toISOString();
+    const u = this.db.prepare('SELECT username FROM users WHERE id = ?').get(actor) as { username: string } | undefined;
+    const report = await shortCodeToReport(c);
+    const serverId = tx(this.db, () => {
+      const sid = nextServerId(this.db, 'RPT');
+      this.db
+        .prepare("INSERT INTO reports (id, server_id, team_id, data, via, received_at, short_ref, short_code_at, relay_hops, relay_gateway) VALUES (?, ?, ?, ?, 'code', ?, ?, ?, ?, ?)")
+        .run(id, sid, c.teamId, JSON.stringify(report), at, c.ref, at, c.hops + extraHops, u?.username ?? actor);
+      return sid;
+    });
+    this.audit(actor, 'report.short_code', id, { serverId, hops: c.hops + extraHops });
+    return { ok: true, duplicate: false, code: c, ack: await this.ack(id, 'report', serverId, at, false) };
   }
 
   async ingestAllotment(a: Allotment, via: Via, actor: string): Promise<Ack> {
@@ -200,6 +255,20 @@ export class Services {
         const ack = await this.ingestMissing(m.payload as MissingReport, 'relay', actor);
         this.noteRelay('missing_reports', (m.payload as MissingReport).id, m.hops, actor);
         return ack;
+      }
+      case 'code': {
+        const text = (m.payload as { text: string }).text;
+        let id = '';
+        try {
+          const c = parseShortCode(text);
+          id = await shortCodeId(c.teamId, c.ref);
+        } catch {
+          /* reported below */
+        }
+        if (id !== m.id) throw new Error('code envelope id does not match the code');
+        const r = await this.ingestCode(text, actor, m.hops);
+        if (!r.ok) throw new Error(r.reason);
+        return r.ack;
       }
       case 'photo_chunk':
         return this.ingestChunk(m, actor);
@@ -442,13 +511,14 @@ export class Services {
   }
 
   listReports() {
-    return (this.db.prepare('SELECT server_id, data, via, received_at, relay_hops, relay_gateway FROM reports ORDER BY received_at DESC').all() as Record<string, string | number | null>[]).map((r) => ({
+    return (this.db.prepare('SELECT server_id, data, via, received_at, relay_hops, relay_gateway, short_code_at FROM reports ORDER BY received_at DESC').all() as Record<string, string | number | null>[]).map((r) => ({
       ...(JSON.parse(r.data as string) as FieldReport),
       serverId: r.server_id as string,
       via: r.via as string,
       receivedAt: r.received_at as string,
       relayHops: r.relay_hops === null ? null : Number(r.relay_hops),
       relayGateway: (r.relay_gateway as string | null) ?? null,
+      shortCodeAt: (r.short_code_at as string | null) ?? null,
     }));
   }
 

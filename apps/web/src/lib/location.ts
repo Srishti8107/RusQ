@@ -4,6 +4,7 @@
  * and on app open; when live location fails we use it and SAY SO ("Last known
  * location, X ago").
  */
+import { isNativeApp } from './platform.ts';
 import { kvGet, kvSet, K } from './db.ts';
 
 export interface Fix {
@@ -36,18 +37,31 @@ async function save(f: Fix) {
   await kvSet(K.lastLocation, f);
 }
 
+/** Android app: Android's own location service (Capacitor Geolocation) – the WebView route could hang. */
+async function nativePosition(timeoutMs: number, maximumAgeMs: number): Promise<Fix> {
+  const { Geolocation } = await import('@capacitor/geolocation');
+  const hard = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Location timed out.')), timeoutMs + 2000));
+  const p = await Promise.race([Geolocation.getCurrentPosition({ enableHighAccuracy: true, timeout: timeoutMs, maximumAge: maximumAgeMs }), hard]);
+  return { lat: +p.coords.latitude.toFixed(6), lng: +p.coords.longitude.toFixed(6), accuracy: Math.round(p.coords.accuracy), at: fixTime(p.timestamp) };
+}
+
 function livePosition(timeoutMs: number, maximumAgeMs: number): Promise<Fix> {
+  if (isNativeApp) return nativePosition(timeoutMs, maximumAgeMs);
   return new Promise((resolve, reject) => {
     if (!('geolocation' in navigator)) return reject(new Error('This phone has no location support.'));
+    // hard limit: settles even if a permission prompt never appears or is never answered
+    const hard = setTimeout(() => reject(new Error('Location timed out.')), timeoutMs + 2000);
+    const done = <T,>(f: (v: T) => void) => (v: T) => (clearTimeout(hard), f(v));
     navigator.geolocation.getCurrentPosition(
-      (p) =>
+      done((p: GeolocationPosition) =>
         resolve({
           lat: +p.coords.latitude.toFixed(6),
           lng: +p.coords.longitude.toFixed(6),
           accuracy: Math.round(p.coords.accuracy),
           at: fixTime(p.timestamp),
         }),
-      (e) => reject(new Error(e.code === e.PERMISSION_DENIED ? 'Location permission is off.' : e.code === e.TIMEOUT ? 'Location timed out.' : 'Location unavailable.')),
+      ),
+      done((e: GeolocationPositionError) => reject(new Error(e.code === e.PERMISSION_DENIED ? 'Location permission is off.' : e.code === e.TIMEOUT ? 'Location timed out.' : 'Location unavailable.'))),
       { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: maximumAgeMs },
     );
   });

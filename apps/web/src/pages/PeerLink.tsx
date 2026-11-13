@@ -6,6 +6,8 @@
  * offline. The connection CODE stays only as a fallback for phones that never were online
  * together (web apps cannot search for nearby phones on their own).
  */
+import { nearbyState, onNearbyChange, startNearby } from '../lib/nearby.ts';
+import { isNativeApp } from '../lib/platform.ts';
 import { useEffect, useState } from 'react';
 import { acceptInvite, closePeer, completeInvite, createInvite, listPeers, onPeersChange, type Peer } from '../lib/lan.ts';
 import { nearbySeen, onNearbySeen } from '../lib/autolink.ts';
@@ -18,6 +20,30 @@ import { useReach } from '../lib/hooks.ts';
 import { syncNow } from '../lib/sync.ts';
 
 const rtcSupported = typeof RTCPeerConnection !== 'undefined';
+
+function NearbyCard() {
+  const [st, setSt] = useState(nearbyState());
+  useEffect(() => {
+    const off = onNearbyChange(() => setSt(nearbyState()));
+    const offPeers = onPeersChange(() => setSt(nearbyState()));
+    return () => (off(), offPeers());
+  }, []);
+  const word = { unavailable: 'not available', off: 'off', permissions: 'needs permission', starting: 'starting…', on: 'on', error: 'error' }[st.state];
+  return (
+    <div className={`banner ${st.state === 'on' ? 'ok' : st.state === 'error' || st.state === 'permissions' ? 'bad' : 'info'}`} data-testid="nearby-status" data-state={st.state}>
+      📡 Bluetooth / Wi-Fi Direct link: <strong>{word}</strong> · {st.links} phone{st.links === 1 ? '' : 's'} linked. No internet, hotspot or pairing needed – RusQ phones nearby (about
+      50–100 m) find each other by themselves while the app is open.
+      {st.detail && <div className="small">{st.detail}</div>}
+      {(st.state === 'off' || st.state === 'error' || st.state === 'permissions') && (
+        <div>
+          <button className="btn small" onClick={() => void startNearby()}>
+            Try again
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function PeerLink() {
   const reach = useReach();
@@ -91,7 +117,8 @@ export function PeerLink() {
       <h1>
         Nearby phones <span className="label-exp">EXPERIMENTAL</span>
       </h1>
-      <div className="banner warn" role="note">
+      {isNativeApp && <NearbyCard />}
+      <div className="banner warn" role="note" hidden={isNativeApp}>
         EXPERIMENTAL: RusQ phones on the same Wi-Fi or phone hotspot connect to each other <strong>by themselves</strong>. Once connected, messages hop from phone
         to phone without internet until one phone reaches the control room. It may not work on every phone or network.
       </div>
@@ -125,7 +152,7 @@ export function PeerLink() {
           <div key={p.id} className="row between" data-testid="lan-peer" data-state={p.state} data-how={p.how}>
             <span>
               {p.state === 'open' ? '🟢' : p.state === 'connecting' ? '🟡' : '⚪'} <strong data-testid="lan-peer-user">{p.remoteUser ?? 'phone'}</strong>{p.remoteName ? ` (${p.remoteName})` : ''} – {p.state === 'open' ? 'connected' : p.state}
-              {p.how === 'auto' ? ' (automatic)' : ' (by code)'} · sent {p.sent} · got {p.received}
+              {p.how === 'nearby' ? ' (Bluetooth / Wi-Fi Direct)' : p.how === 'auto' ? ' (automatic)' : ' (by code)'} · sent {p.sent} · got {p.received}
             </span>
             <button className="btn small secondary" onClick={() => closePeer(p.id)}>
               Disconnect

@@ -74,7 +74,9 @@ export async function applyEvent(id: string, ev: DeliveryEvent): Promise<void> {
     const p = await db.photos.get(id);
     if (p) {
       const next = applyDeliveryEvent(p, ev);
-      if (next !== p) await db.photos.put({ ...p, ...next, kind: p.kind });
+      // Once the control room confirmed a photo, the phone only needs the small thumbnail:
+      // drop the full image so the app does not keep growing (owner: app too big).
+      if (next !== p) await db.photos.put({ ...p, ...next, kind: p.kind, ...(next.status === 'received' ? { bytes: new ArrayBuffer(0) } : {}) });
     }
   });
 }
@@ -95,4 +97,17 @@ export async function markSentViaRelay(ids: string[]) {
     const row = (await db.outbox.get(id)) ?? (await db.photos.get(id));
     if (row && row.status === 'queued') await applyEvent(id, { type: 'send_started', via: 'relay' });
   }
+}
+
+/** Free the full image of photos the control room already confirmed (older versions kept them). Returns MB freed. */
+export async function pruneReceivedPhotos(): Promise<number> {
+  let freed = 0;
+  await db.photos
+    .where('status')
+    .equals('received')
+    .modify((p) => {
+      freed += p.bytes?.byteLength ?? 0;
+      p.bytes = new ArrayBuffer(0);
+    });
+  return Math.round((freed / 1048576) * 10) / 10;
 }

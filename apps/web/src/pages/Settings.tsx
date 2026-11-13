@@ -55,6 +55,14 @@ export function SettingsPage() {
           </span>
         </label>
       </div>
+      <div className="card" data-testid="sms-settings">
+        <h2>Short codes by SMS</h2>
+        <label className="field">
+          Send short codes to these numbers (control-room SMS gateway first, then other rescuers; separate with commas)
+          <input inputMode="tel" value={s.smsNumbers} placeholder="+91…, +91…" onChange={(e) => void update({ smsNumbers: e.target.value })} data-testid="sms-numbers" />
+        </label>
+        <p className="small muted">The SMS app opens with the code filled in – you tap Send. Works with weak signal (2G) when the internet does not.</p>
+      </div>
       <div className="card" data-testid="assistant-settings">
         <h2>
           AI writing helper <span className="label-exp">EXPERIMENTAL</span> <span className="label-advisory">OPTIONAL</span>

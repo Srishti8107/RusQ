@@ -7,10 +7,11 @@ import { loadModels, type LoadedModels, type TextEmbeds } from './vision-core.ts
 
 type TF = typeof import('@huggingface/transformers');
 
-export function configureTf(tf: TF, origin: string, opts: { lowPower: boolean; proxy: boolean }) {
+/** origin = where /ort/ (ONNX runtime) lives; modelsOrigin = where /models/ lives (the server in the Android app). */
+export function configureTf(tf: TF, origin: string, opts: { lowPower: boolean; proxy: boolean; modelsOrigin?: string }) {
   tf.env.allowLocalModels = false;
   tf.env.allowRemoteModels = true;
-  tf.env.remoteHost = `${origin}/models/`;
+  tf.env.remoteHost = `${opts.modelsOrigin || origin}/models/`;
   tf.env.remotePathTemplate = '{model}/';
   tf.env.useBrowserCache = true;
   const wasm = tf.env.backends.onnx.wasm;

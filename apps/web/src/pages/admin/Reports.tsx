@@ -6,7 +6,7 @@ import { agoText } from '../../lib/location.ts';
 import { AuthImage, Freshness } from '../../components/AdminBits.tsx';
 import { relayText } from '../../components/AdminBits.tsx';
 
-type Row = FieldReport & { serverId: string; via: string; receivedAt: string; photosReceived: string[]; nearestShelter: { id: string; name: string; distanceM: number } | null };
+type Row = FieldReport & { serverId: string; via: string; receivedAt: string; relayHops?: number | null; relayGateway?: string | null; shortCodeAt?: string | null; photosReceived: string[]; nearestShelter: { id: string; name: string; distanceM: number } | null };
 
 export function AdminReports() {
   const q = useCachedApi<Row[]>('/admin/reports-view', 30_000);
@@ -68,6 +68,7 @@ export function AdminReports() {
           <div className="row between">
             <strong>
               📝 {r.serverId} · {r.teamId}
+              {r.via === 'code' && <span className="label-advisory" style={{ marginLeft: 6 }} data-testid="short-code-badge">SHORT CODE</span>}
             </strong>
             <span className="small muted">
               made {agoText(r.createdAt, now)} · received via {relayText(r)}

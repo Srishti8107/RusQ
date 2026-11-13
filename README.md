@@ -17,9 +17,12 @@ networks fail. The guiding principle: **the system assists, humans decide.**
 | Registration, profile with emergency contacts (phone + server), SOS carries the profile | real |
 | Offline shelter map (self-hosted vector tiles of a **sample region**, Kathmandu, Nepal) | real map engine; **sample** shelters |
 | Admin dashboard: central map with hot zones + heatmap, SOS monitor, reports with photos, analytics, **pop-up alerts for every new SOS / report** | real |
-| Rule-based decision support with reasoning, approve/reject, team tasks | real, **advisory**; the admin decides |
+| Rule-based decision support with reasoning, approve/reject, team tasks |
+| **Team assignments**: the control room sends teams to locations (priority area, map tap or coordinates) with a priority; teams see them highest priority first and report on the way / done; pop-ups for the control room | real | real, **advisory**; the admin decides |
 | Peer-to-peer link between phones on the same Wi-Fi/hotspot (WebRTC, no internet) – phones connect **automatically** while the server is reachable, the link survives losing it | **EXPERIMENTAL** (real, tested only between browsers on one PC) |
 | Multi-hop relay between phones (A → B → C → server) with on-screen "Connected to / Receiving from {user ID}" alerts, a transfer log and hop counts on the control-room screens | **EXPERIMENTAL** (real WebRTC links; multi-hop tested with 3 browsers on one PC) |
+| **Android field app** (Capacitor): phones link by themselves over Bluetooth / Wi-Fi Direct (Google Nearby Connections) – no internet, hotspot or pairing; the website is for the control room | **EXPERIMENTAL** – builds; not yet tested on real phones (docs/ANDROID_APP.md) |
+| Rescuer **short codes**: a report as one SMS-sized line (people, needs, location), sent by SMS, passed on by other rescuers, uploaded by whoever gets internet; the full report replaces it later | real; sending/pasting the SMS is manual (web apps cannot send or read SMS) |
 | On-device vision (CLIP + YOLOS-tiny, in a Web Worker, offline) | real, **advisory only** |
 | Provisional resource allotment on the phone | real, **provisional**; the admin decides |
 | CCTV demo | **SAMPLE DATA**: synthetic animated clips + hand-labelled detections; no cameras, no faces |
