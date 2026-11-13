@@ -101,7 +101,7 @@ export const CHECKLIST: CheckItem[] = [
     roles: ['victim', 'rescuer', 'admin'],
     sizeBytes: async () => {
       try {
-        return ((await (await fetch(MAP_INFO)).json()) as { bytes: number }).bytes;
+        return ((await (await fetch(MAP_INFO, { signal: AbortSignal.timeout(5000) })).json()) as { bytes: number }).bytes;
       } catch {
         return (await verifyMapStored()).bytes ?? null;
       }

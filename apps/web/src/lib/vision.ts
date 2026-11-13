@@ -53,8 +53,37 @@ function call<T>(msg: Record<string, unknown>, onProgress?: (p: unknown) => void
  */
 export const VISION_MODE: 'worker' | 'main-thread' = typeof OffscreenCanvas === 'undefined' ? 'main-thread' : 'worker';
 
+/**
+ * Android app: the models are saved under the server's address. If that address changes (a new tunnel
+ * URL, a new server), the files are still on the phone – copy them to the new address instead of
+ * calling them missing and downloading 95 MB again.
+ */
+export async function relinkModels(): Promise<number> {
+  if (!isNativeApp || !('caches' in self)) return 0;
+  const origin = modelOrigin();
+  if (!origin) return 0;
+  let moved = 0;
+  for (const name of ['rusq-models', 'transformers-cache']) {
+    const cache = await caches.open(name);
+    for (const req of await cache.keys()) {
+      const u = new URL(req.url);
+      if (!u.pathname.startsWith('/models/') || u.origin === origin) continue;
+      const target = origin + u.pathname;
+      if (!(await cache.match(target))) {
+        const res = await cache.match(req);
+        if (res) {
+          await cache.put(target, res);
+          moved++;
+        }
+      }
+    }
+  }
+  return moved;
+}
+
 export async function loadVision(onProgress?: (p: { file?: string; loaded?: number; total?: number; status: string }) => void) {
   const { lowPower } = await getSettings();
+  await relinkModels().catch(() => 0);
   if (VISION_MODE === 'main-thread') return (await import('./vision-main.ts')).loadOnMain(lowPower, onProgress);
   return call<{ loaded: boolean; backend: string }>({ type: 'load', preferGpu: true, lowPower, modelsOrigin: modelOrigin() }, onProgress as (p: unknown) => void, 600_000);
 }
@@ -79,7 +108,7 @@ export interface ModelFile {
 
 /** Files the phone must hold for offline vision (from /models/manifest.json). */
 export async function modelFiles(): Promise<ModelFile[]> {
-  const res = await fetch(`${modelOrigin()}/models/manifest.json`, { cache: 'no-store' });
+  const res = await fetch(`${modelOrigin()}/models/manifest.json`, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error('model manifest unavailable');
   const m = (await res.json()) as { models: Record<string, { file: string; bytes: number }[]>; extra: { file: string; bytes: number }[] };
   const out: ModelFile[] = [];
@@ -95,6 +124,7 @@ export async function modelFiles(): Promise<ModelFile[]> {
  */
 export async function verifyModelsStored(files?: ModelFile[]): Promise<{ ok: boolean; missing: string[] }> {
   if (!('caches' in self)) return { ok: false, missing: ['Cache API unavailable'] };
+  await relinkModels();
   const list = files ?? (await cachedManifest());
   const missing: string[] = [];
   for (const f of list) {
@@ -132,10 +162,27 @@ export async function downloadModelFiles(onProgress: (done: number, total: numbe
   let done = 0;
   for (const f of all) {
     if (!(await cache.match(f.url))) {
-      const blob = await fetchResumable(f.url, f.bytes, (got) => onProgress(done + got, total));
-      const headers = { 'content-type': f.url.endsWith('.json') ? 'application/json' : 'application/octet-stream', 'content-length': String(blob.size) };
-      await cache.put(f.url, new Response(blob, { headers }));
-      if (tfCache) await tfCache.put(f.url, new Response(blob, { headers }));
+      // Normal case: stream straight into the cache (no 85 MB copy in memory – holding it starved the
+      // model loader on weak devices). Only if the connection is cut, fall back to resuming from the
+      // byte where it stopped.
+      let saved = false;
+      try {
+        const res = await fetch(f.url, { cache: 'no-store' });
+        if (res.status === 404) throw new Error(`download failed: ${f.url} (not on the server)`);
+        if (res.ok) {
+          await cache.put(f.url, res);
+          saved = true;
+        }
+      } catch (e) {
+        if ((e as Error).message.includes('not on the server')) throw e;
+      }
+      if (!saved) {
+        const blob = await fetchResumable(f.url, f.bytes, (got) => onProgress(done + got, total));
+        // keep the real type: the ONNX runtime's .mjs must be served as JavaScript or the browser refuses to import it
+        const headers = { 'content-type': blob.type || typeFor(f.url), 'content-length': String(blob.size) };
+        await cache.put(f.url, new Response(blob, { headers }));
+      }
+      if (tfCache) await tfCache.put(f.url, (await cache.match(f.url))!);
     } else if (tfCache && !(await tfCache.match(f.url))) {
       await tfCache.put(f.url, (await cache.match(f.url))!);
     }
@@ -144,56 +191,55 @@ export async function downloadModelFiles(onProgress: (done: number, total: numbe
   }
 }
 
-const PIECE = 4 * 1024 * 1024;
-
-/**
- * Download a file in 4 MB pieces (HTTP Range), retrying only the piece that failed. A long single
- * request through a tunnel or a weak mobile link is often cut ("stream canceled"); before, that
- * restarted the whole 85 MB model and ended in "Cache.put() encountered a network error".
- */
-async function fetchResumable(url: string, expected: number, onBytes: (got: number) => void): Promise<Blob> {
-  if (expected < PIECE * 2) return fetchWithRetry(url, undefined).then((r) => r.blob());
-  const parts: Blob[] = [];
-  let got = 0;
-  let size = expected;
-  while (got < size) {
-    const end = Math.min(got + PIECE, size) - 1;
-    const res = await fetchWithRetry(url, `bytes=${got}-${end}`);
-    if (res.status === 200) {
-      // server ignored the range: it sent the whole file in one go
-      const whole = await res.blob();
-      onBytes(whole.size);
-      return whole;
-    }
-    const total = Number(/\/(\d+)$/.exec(res.headers.get('content-range') ?? '')?.[1]);
-    if (total > 0) size = total;
-    const piece = await res.blob();
-    if (piece.size === 0) throw new Error(`download failed: ${url} (empty piece)`);
-    parts.push(piece);
-    got += piece.size;
-    onBytes(got);
-  }
-  return new Blob(parts);
+function typeFor(url: string): string {
+  const path = url.split('?')[0]!;
+  if (path.endsWith('.js') || path.endsWith('.mjs')) return 'text/javascript';
+  if (path.endsWith('.wasm')) return 'application/wasm';
+  if (path.endsWith('.json')) return 'application/json';
+  return 'application/octet-stream';
 }
 
-async function fetchWithRetry(url: string, range: string | undefined, tries = 6): Promise<Response> {
-  let last: unknown;
-  for (let i = 0; i < tries; i++) {
+class FatalDownload extends Error {}
+
+/**
+ * Download a file in ONE request, but if the connection is cut part-way, continue from the byte where
+ * it stopped (HTTP Range) instead of starting again. A long download through a tunnel or a weak mobile
+ * link is often cut ("stream canceled"); before, that restarted the whole 85 MB model and ended in
+ * "Cache.put() encountered a network error".
+ */
+async function fetchResumable(url: string, _expected: number, onBytes: (got: number) => void): Promise<Blob> {
+  const parts: Uint8Array[] = [];
+  let got = 0;
+  let size = 0; // from the server's headers
+  let tries = 0;
+  for (;;) {
     try {
-      const res = await fetch(url, { cache: 'no-store', headers: range ? { range } : undefined });
-      if (res.ok || res.status === 206) {
-        // read the body here so a cut connection is caught and retried, not passed on
-        const buf = await res.arrayBuffer();
-        return new Response(buf, { status: res.status, headers: res.headers });
+      const res = await fetch(url, { cache: 'no-store', headers: got > 0 ? { range: `bytes=${got}-` } : undefined });
+      if (res.status === 404) throw new FatalDownload(`download failed: ${url} (not on the server)`);
+      if (!(res.ok || res.status === 206)) throw new Error(`download failed: ${url} (${res.status})`);
+      if (got > 0 && res.status === 200) {
+        parts.length = 0; // the server ignored the range – start again from the beginning
+        got = 0;
       }
-      last = new Error(`download failed: ${url} (${res.status})`);
-      if (res.status === 404) break;
+      const total = Number(/\/(\d+)$/.exec(res.headers.get('content-range') ?? '')?.[1]);
+      const len = Number(res.headers.get('content-length'));
+      size = total > 0 ? total : len > 0 ? got + len : 0;
+      const reader = res.body!.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value);
+        got += value.length;
+        onBytes(got);
+      }
+      if (size && got < size) throw new Error('connection cut');
+      return new Blob(parts as BlobPart[], { type: typeFor(url) });
     } catch (e) {
-      last = e;
+      if (e instanceof FatalDownload) throw e;
+      if (++tries > 8) throw new Error(`download stopped (${(e as Error).message}) – check the connection and tap again; finished files are kept`);
+      await new Promise((r) => setTimeout(r, Math.min(15_000, 1000 * 2 ** (tries - 1)))); // 1, 2, 4, 8, 15 s …
     }
-    await new Promise((r) => setTimeout(r, Math.min(15_000, 1000 * 2 ** i))); // 1, 2, 4, 8, 15 s
   }
-  throw last instanceof Error ? new Error(`${last.message} – check the connection and tap again; finished files are kept`) : new Error('download failed');
 }
 
 export function terminateVision() {

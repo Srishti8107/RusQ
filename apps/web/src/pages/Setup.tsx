@@ -28,11 +28,14 @@ export function Setup() {
   const verifyAll = useCallback(async () => {
     const startedAt = performance.now();
     const next: Record<string, ItemState> = {};
-    for (const it of items) {
-      const v = await it.verify().catch((e) => ({ ok: false, detail: friendlyError(e) }));
-      const size = it.sizeBytes ? await it.sizeBytes().catch(() => null) : null;
-      next[it.id] = { ...v, size, busy: false };
-    }
+    // all checks at once: one slow check (e.g. the server behind a bad tunnel) must not hold up the others
+    await Promise.all(
+      items.map(async (it) => {
+        const v = await it.verify().catch((e) => ({ ok: false, detail: friendlyError(e) }));
+        const size = it.sizeBytes ? await it.sizeBytes().catch(() => null) : null;
+        next[it.id] = { ...v, size, busy: false };
+      }),
+    );
     // A check that started BEFORE a download finished must not overwrite that download's
     // fresh result (race seen when the role loads while "Team key" is downloading).
     setState((cur) => {
@@ -50,6 +53,11 @@ export function Setup() {
 
   async function run(id: ItemId) {
     const it = items.find((i) => i.id === id)!;
+    const local = id === 'location' || id === 'storage' || id === 'shell';
+    if (!local && reach !== 'online') {
+      setState((s) => ({ ...s, [id]: { ...(s[id] ?? { ok: false, detail: '', size: null }), busy: false, error: 'Needs internet to download. Everything already saved (green) keeps working offline.' } }));
+      return;
+    }
     setState((s) => ({ ...s, [id]: { ...(s[id] ?? { ok: false, detail: '', size: null }), busy: true, error: undefined, progress: 'Starting…' } }));
     try {
       await it.download?.((msg) => setState((s) => ({ ...s, [id]: { ...s[id]!, progress: msg } })));
@@ -58,16 +66,21 @@ export function Setup() {
       setState((s) => ({ ...s, [id]: { ...s[id]!, busy: false, error: msg, progress: undefined } }));
       return;
     }
+    // show the result at once; the size (which may ask the server) is filled in afterwards
     const v = await it.verify().catch((e) => ({ ok: false, detail: friendlyError(e) }));
-    const size = it.sizeBytes ? await it.sizeBytes().catch(() => null) : null;
     ranAt.current[id] = performance.now();
+    setState((s) => ({ ...s, [id]: { ...v, size: s[id]?.size ?? null, busy: false } }));
+    const size = it.sizeBytes ? await it.sizeBytes().catch(() => null) : null;
     setState((s) => ({ ...s, [id]: { ...v, size, busy: false } }));
     setEst(await storageEstimate());
   }
 
   async function runAll() {
     setBusyAll(true);
-    for (const it of items) if (!state[it.id]?.ok) await run(it.id);
+    // quick steps on the phone first, the big downloads (map, photo helper) last
+    const order: ItemId[] = ['location', 'storage', 'shell', 'keys', 'snapshot', 'shelters', 'map', 'vision'];
+    const sorted = [...items].sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+    for (const it of sorted) if (!state[it.id]?.ok) await run(it.id);
     setBusyAll(false);
   }
 
